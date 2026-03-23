@@ -65,7 +65,7 @@ async function main() {
     const archiveStrategy = await prepareArchiveMailbox(imap);
     await imap.mailboxOpen(config.imap.mailbox);
 
-    const unseen = await imap.search({ seen: false });
+    const unseen = await imap.search({ seen: false }, { uid: true });
     const targetIds = unseen.slice(0, config.pollMaxMessages);
 
     if (targetIds.length === 0) {
@@ -82,7 +82,12 @@ async function main() {
 }
 
 async function processMessage({ imap, smtp, uid, archiveStrategy }) {
-  const message = await imap.fetchOne(uid, { uid: true, envelope: true, source: true });
+  const message = await imap.fetchOne(uid, { uid: true, envelope: true, source: true }, { uid: true });
+  if (!message?.source) {
+    console.warn(`Skipping UID ${uid}: message source is empty.`);
+    return;
+  }
+
   const parsed = await simpleParser(message.source);
   const from = parsed.from?.value?.[0];
 
@@ -174,14 +179,14 @@ async function prepareArchiveMailbox(imap) {
 }
 
 async function completeMessage(imap, uid, archiveStrategy) {
-  await imap.messageFlagsAdd(uid, ['\\Seen']);
+  await imap.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
 
   if (!archiveStrategy.enabled) {
     return;
   }
 
   try {
-    await imap.messageMove(uid, archiveStrategy.mailbox);
+    await imap.messageMove(uid, archiveStrategy.mailbox, { uid: true });
   } catch (error) {
     console.warn([
       `Failed to move UID ${uid} to "${archiveStrategy.mailbox}".`,
