@@ -35,6 +35,7 @@ const config = {
     httpAuthHeader: process.env.OPENCLAW_HTTP_AUTH_HEADER || '',
     httpAuthToken: process.env.OPENCLAW_HTTP_AUTH_TOKEN || '',
     httpTimeoutMs: number('OPENCLAW_HTTP_TIMEOUT_MS', 120000),
+    cliBin: process.env.OPENCLAW_CLI_BIN || '/home/forrestmo/.npm-global/bin/openclaw',
     cliAgent: process.env.OPENCLAW_CLI_AGENT || 'bankriskmail',
     maxBodyChars: number('OPENCLAW_MAX_BODY_CHARS', 4000),
     maxReplyChars: number('OPENCLAW_MAX_REPLY_CHARS', 6000),
@@ -365,7 +366,7 @@ async function invokeOpenClawHttp(prompt) {
 }
 
 async function invokeOpenClawCli(prompt) {
-  const command = 'openclaw';
+  const command = config.openclaw.cliBin;
   const args = ['agent', '--local', '--agent', config.openclaw.cliAgent, '--message', prompt];
 
   console.log(`[OpenClaw][CLI] ${command} agent --local --agent ${config.openclaw.cliAgent} --message <PROMPT>`);
