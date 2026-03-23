@@ -156,6 +156,7 @@ journalctl -u openclaw-mail.service -f
 - 只有成功拿到 OpenClaw 结果且 SMTP 回信成功后，才会把邮件标记已读并移动到 `已完成`
 - 默认不会主动创建 `已完成` 文件夹；若邮箱服务商支持并且你希望自动创建，可将 `IMAP_DONE_MAILBOX_CREATE=true`
 - 若归档目录不存在或移动失败，脚本会回退为“仅标记已读”，避免整次任务失败
+- CLI 模式下如果 OpenClaw 把插件注册日志或过程性提示混到 stdout，脚本会先剥离 `[plugins] ...` 等噪音行，再把净化后的正文用于回邮
 
 ### 3. HTTP / CLI 双模式
 
