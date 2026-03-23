@@ -35,7 +35,7 @@ const config = {
     httpAuthHeader: process.env.OPENCLAW_HTTP_AUTH_HEADER || '',
     httpAuthToken: process.env.OPENCLAW_HTTP_AUTH_TOKEN || '',
     httpTimeoutMs: number('OPENCLAW_HTTP_TIMEOUT_MS', 120000),
-    cliAgent: process.env.OPENCLAW_CLI_AGENT || 'default',
+    cliAgent: process.env.OPENCLAW_CLI_AGENT || 'bankriskmail',
     maxBodyChars: number('OPENCLAW_MAX_BODY_CHARS', 4000),
     maxReplyChars: number('OPENCLAW_MAX_REPLY_CHARS', 6000),
     routes: {
@@ -149,16 +149,9 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
     body: cleanBody,
     route,
   });
-  const sessionId = buildMailSessionId({
-    uid,
-    messageId: parsed.messageId,
-    sender: from.address,
-    subject,
-  });
-
   let replyBody;
   try {
-    replyBody = await invokeOpenClaw({ prompt, sessionId, sender: from.address, senderName });
+    replyBody = await invokeOpenClaw({ prompt, sender: from.address, senderName });
   } catch (error) {
     console.error(`OpenClaw failed for UID ${uid}:`, error);
 
@@ -313,15 +306,14 @@ function buildPrompt({ sender, senderName, subject, body, route }) {
   ].join('\n');
 }
 
-async function invokeOpenClaw({ prompt, sessionId, sender, senderName }) {
+async function invokeOpenClaw({ prompt, sender, senderName }) {
   if (config.logOpenClawPrompt) {
     logBlock('OpenClaw prompt', prompt);
-    console.log(`[OpenClaw] session-id=${sessionId}`);
   }
 
   let result;
   if (config.openclaw.mode === 'cli') {
-    result = await invokeOpenClawCli(prompt, sessionId);
+    result = await invokeOpenClawCli(prompt);
   } else {
     result = await invokeOpenClawHttp(prompt);
   }
@@ -372,11 +364,11 @@ async function invokeOpenClawHttp(prompt) {
   return data.output || data.result || data.reply || JSON.stringify(data);
 }
 
-async function invokeOpenClawCli(prompt, sessionId) {
+async function invokeOpenClawCli(prompt) {
   const command = 'openclaw';
-  const args = ['agent', '--agent', config.openclaw.cliAgent, '--session-id', sessionId, '--message', prompt];
+  const args = ['agent', '--local', '--agent', config.openclaw.cliAgent, '--message', prompt];
 
-  console.log(`[OpenClaw][CLI] ${command} agent --agent ${config.openclaw.cliAgent} --session-id ${sessionId} --message <PROMPT>`);
+  console.log(`[OpenClaw][CLI] ${command} agent --local --agent ${config.openclaw.cliAgent} --message <PROMPT>`);
 
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, {
@@ -462,12 +454,6 @@ function normalizeOpenClawLine(line) {
     .replace(/\u001B\[[0-9;]*m/g, '')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .trim();
-}
-
-function buildMailSessionId({ uid, messageId, sender, subject }) {
-  const source = messageId || `${uid}:${sender}:${subject}`;
-  const encoded = Buffer.from(source).toString('base64url').slice(0, 80);
-  return `mail-${encoded}`;
 }
 
 function isolateReplyForCurrentMail(output, { sender, senderName }) {

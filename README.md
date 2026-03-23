@@ -46,7 +46,7 @@ cp .env.example .env
 - `POLL_MAX_MESSAGES`：每次轮询最多处理的未读邮件数，默认 `1`；推荐保持为 `1` 以确保每次只处理一封邮件，避免 OpenClaw 上下文串扰
 - `OPENCLAW_MODE=http|cli`：调用方式
 - `OPENCLAW_HTTP_URL`：HTTP 模式下的 OpenClaw 入口
-- `OPENCLAW_CLI_AGENT`：CLI 模式下使用的 agent 名，默认 `default`
+- `OPENCLAW_CLI_AGENT`：CLI 模式下使用的 agent 名，默认 `bankriskmail`
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
@@ -184,23 +184,23 @@ journalctl -u openclaw-mail.service -f
 当 `OPENCLAW_MODE=cli` 时，脚本会固定调用：
 
 ```bash
-openclaw agent --agent default --session-id <邮件唯一ID> --message "任务来源：邮件 ..."
+openclaw agent --local --agent bankriskmail --message "任务来源：邮件 ..."
 ```
 
 如果你想切换 agent，可通过 `OPENCLAW_CLI_AGENT` 配置，例如：
 
 ```bash
 OPENCLAW_MODE=cli
-OPENCLAW_CLI_AGENT=default
+OPENCLAW_CLI_AGENT=bankriskmail
 ```
 
 最终执行命令格式始终为：
 
 ```bash
-openclaw agent --agent <agent> --session-id <邮件唯一ID> --message "任务来源：邮件 ..."
+openclaw agent --local --agent <agent> --message "任务来源：邮件 ..."
 ```
 
-实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。CLI 模式下还会基于每封邮件的 `Message-ID`（无则回退到 UID+发件人+主题）生成稳定的 `session-id`，从而实现“每封邮件独立 session”。
+实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。CLI 模式使用 `--local` 启动单次本地会话，不再复用历史 session。
 
 ## 推荐部署建议
 
