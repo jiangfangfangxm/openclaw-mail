@@ -100,10 +100,16 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
     body: cleanBody,
     route,
   });
+  const sessionId = buildMailSessionId({
+    uid,
+    messageId: parsed.messageId,
+    sender: from.address,
+    subject,
+  });
 
   let replyBody;
   try {
-    replyBody = await invokeOpenClaw(prompt);
+    replyBody = await invokeOpenClaw({ prompt, sessionId });
   } catch (error) {
     console.error(`OpenClaw failed for UID ${uid}:`, error);
 
@@ -255,14 +261,15 @@ function buildPrompt({ sender, subject, body, route }) {
   ].join('\n');
 }
 
-async function invokeOpenClaw(prompt) {
+async function invokeOpenClaw({ prompt, sessionId }) {
   if (config.logOpenClawPrompt) {
     logBlock('OpenClaw prompt', prompt);
+    console.log(`[OpenClaw] session-id=${sessionId}`);
   }
 
   let result;
   if (config.openclaw.mode === 'cli') {
-    result = await invokeOpenClawCli(prompt);
+    result = await invokeOpenClawCli(prompt, sessionId);
   } else {
     result = await invokeOpenClawHttp(prompt);
   }
@@ -308,11 +315,11 @@ async function invokeOpenClawHttp(prompt) {
   return data.output || data.result || data.reply || JSON.stringify(data);
 }
 
-async function invokeOpenClawCli(prompt) {
+async function invokeOpenClawCli(prompt, sessionId) {
   const command = 'openclaw';
-  const args = ['agent', '--agent', config.openclaw.cliAgent, '--message', prompt];
+  const args = ['agent', '--agent', config.openclaw.cliAgent, '--session-id', sessionId, '--message', prompt];
 
-  console.log(`[OpenClaw][CLI] ${command} agent --agent ${config.openclaw.cliAgent} --message <PROMPT>`);
+  console.log(`[OpenClaw][CLI] ${command} agent --agent ${config.openclaw.cliAgent} --session-id ${sessionId} --message <PROMPT>`);
 
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, {
@@ -398,6 +405,12 @@ function normalizeOpenClawLine(line) {
     .replace(/\u001B\[[0-9;]*m/g, '')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .trim();
+}
+
+function buildMailSessionId({ uid, messageId, sender, subject }) {
+  const source = messageId || `${uid}:${sender}:${subject}`;
+  const encoded = Buffer.from(source).toString('base64url').slice(0, 80);
+  return `mail-${encoded}`;
 }
 
 function buildFailureReply(subject) {

@@ -179,7 +179,7 @@ journalctl -u openclaw-mail.service -f
 当 `OPENCLAW_MODE=cli` 时，脚本会固定调用：
 
 ```bash
-openclaw agent --agent default --message "任务来源：邮件 ..."
+openclaw agent --agent default --session-id <邮件唯一ID> --message "任务来源：邮件 ..."
 ```
 
 如果你想切换 agent，可通过 `OPENCLAW_CLI_AGENT` 配置，例如：
@@ -192,10 +192,10 @@ OPENCLAW_CLI_AGENT=default
 最终执行命令格式始终为：
 
 ```bash
-openclaw agent --agent <agent> --message "任务来源：邮件 ..."
+openclaw agent --agent <agent> --session-id <邮件唯一ID> --message "任务来源：邮件 ..."
 ```
 
-实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。
+实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。CLI 模式下还会基于每封邮件的 `Message-ID`（无则回退到 UID+发件人+主题）生成稳定的 `session-id`，从而实现“每封邮件独立 session”。
 
 ## 推荐部署建议
 
