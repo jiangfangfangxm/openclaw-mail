@@ -1,0 +1,21 @@
+{
+  "name": "openclaw-mail",
+  "version": "0.1.0",
+  "description": "Lightweight mail polling bridge for OpenClaw",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "html-to-text": "^9.0.5",
+    "imapflow": "^1.0.181",
+    "mailparser": "^3.7.2",
+    "nodemailer": "^6.9.16"
+  }
+}

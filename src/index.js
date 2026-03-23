@@ -1,0 +1,286 @@
+import 'dotenv/config';
+import { ImapFlow } from 'imapflow';
+import nodemailer from 'nodemailer';
+import { simpleParser } from 'mailparser';
+import { htmlToText } from 'html-to-text';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+const config = {
+  imap: {
+    host: required('IMAP_HOST'),
+    port: number('IMAP_PORT', 993),
+    secure: boolean('IMAP_SECURE', true),
+    auth: {
+      user: required('IMAP_USER'),
+      pass: required('IMAP_PASS'),
+    },
+    mailbox: process.env.IMAP_MAILBOX || 'INBOX',
+    doneMailbox: process.env.IMAP_DONE_MAILBOX || '已完成',
+  },
+  smtp: {
+    host: required('SMTP_HOST'),
+    port: number('SMTP_PORT', 465),
+    secure: boolean('SMTP_SECURE', true),
+    auth: {
+      user: required('SMTP_USER'),
+      pass: required('SMTP_PASS'),
+    },
+  },
+  openclaw: {
+    mode: process.env.OPENCLAW_MODE || 'http',
+    httpUrl: process.env.OPENCLAW_HTTP_URL || '',
+    httpMethod: process.env.OPENCLAW_HTTP_METHOD || 'POST',
+    httpAuthHeader: process.env.OPENCLAW_HTTP_AUTH_HEADER || '',
+    httpAuthToken: process.env.OPENCLAW_HTTP_AUTH_TOKEN || '',
+    httpTimeoutMs: number('OPENCLAW_HTTP_TIMEOUT_MS', 120000),
+    cliCommand: process.env.OPENCLAW_CLI_COMMAND || '',
+    maxBodyChars: number('OPENCLAW_MAX_BODY_CHARS', 4000),
+    maxReplyChars: number('OPENCLAW_MAX_REPLY_CHARS', 6000),
+    routes: {
+      search: process.env.OPENCLAW_ROUTE_SEARCH || 'websearch:',
+      browser: process.env.OPENCLAW_ROUTE_BROWSER || 'browser:',
+      qa: process.env.OPENCLAW_ROUTE_QA || 'qa:',
+    },
+  },
+  pollMaxMessages: number('POLL_MAX_MESSAGES', 5),
+  mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
+};
+
+async function main() {
+  const imap = new ImapFlow({
+    host: config.imap.host,
+    port: config.imap.port,
+    secure: config.imap.secure,
+    auth: config.imap.auth,
+  });
+
+  const smtp = nodemailer.createTransport(config.smtp);
+
+  await imap.connect();
+  try {
+    await ensureMailbox(imap, config.imap.doneMailbox);
+    await imap.mailboxOpen(config.imap.mailbox);
+
+    const unseen = await imap.search({ seen: false });
+    const targetIds = unseen.slice(0, config.pollMaxMessages);
+
+    if (targetIds.length === 0) {
+      console.log('No unread messages.');
+      return;
+    }
+
+    for (const uid of targetIds) {
+      await processMessage({ imap, smtp, uid });
+    }
+  } finally {
+    await imap.logout();
+  }
+}
+
+async function processMessage({ imap, smtp, uid }) {
+  const message = await imap.fetchOne(uid, { uid: true, envelope: true, source: true });
+  const parsed = await simpleParser(message.source);
+  const from = parsed.from?.value?.[0];
+
+  if (!from?.address) {
+    console.warn(`Skipping UID ${uid}: missing sender address.`);
+    return;
+  }
+
+  const subject = (parsed.subject || '').trim() || '(no subject)';
+  const cleanBody = cleanMailBody(parsed).slice(0, config.openclaw.maxBodyChars);
+  const route = detectRoute(subject, config.openclaw.routes);
+  const prompt = buildPrompt({
+    sender: from.address,
+    subject,
+    body: cleanBody,
+    route,
+  });
+
+  let replyBody;
+  try {
+    replyBody = await invokeOpenClaw(prompt);
+  } catch (error) {
+    console.error(`OpenClaw failed for UID ${uid}:`, error);
+    replyBody = [
+      '邮件任务处理失败。',
+      '',
+      `主题：${subject}`,
+      '请稍后重试，或把任务拆短后再次发送。',
+    ].join('\n');
+  }
+
+  const finalReply = normalizeReply(replyBody).slice(0, config.openclaw.maxReplyChars);
+
+  await smtp.sendMail({
+    from: config.smtp.auth.user,
+    to: from.address,
+    subject: buildReplySubject(subject),
+    text: finalReply,
+    inReplyTo: parsed.messageId,
+    references: parsed.messageId,
+  });
+
+  await imap.messageFlagsAdd(uid, ['\\Seen']);
+  await imap.messageMove(uid, config.imap.doneMailbox);
+  console.log(`Processed UID ${uid} from ${from.address}`);
+}
+
+function cleanMailBody(parsed) {
+  const sourceText = parsed.text?.trim()
+    || htmlToText(parsed.html || '', {
+      wordwrap: false,
+      selectors: [{ selector: 'a', options: { hideLinkHrefIfSameAsText: true } }],
+    });
+
+  const lines = sourceText
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trimEnd());
+
+  const stopPatterns = [
+    /^On .+wrote:$/i,
+    /^From:\s/i,
+    /^Sent:\s/i,
+    /^To:\s/i,
+    /^Subject:\s/i,
+    /^-{2,}\s?Original Message\s?-{2,}$/i,
+    /^免责声明/i,
+    /^DISCLAIMER/i,
+  ];
+
+  const cleaned = [];
+  for (const line of lines) {
+    if (stopPatterns.some((pattern) => pattern.test(line))) {
+      break;
+    }
+    if (line.startsWith('>')) {
+      continue;
+    }
+    cleaned.push(line);
+  }
+
+  return cleaned
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/--\s*\n[\s\S]*$/m, '')
+    .trim();
+}
+
+function detectRoute(subject, routes) {
+  const lowered = subject.toLowerCase();
+  if (lowered.startsWith(routes.search.toLowerCase())) return 'websearch';
+  if (lowered.startsWith(routes.browser.toLowerCase())) return 'browser';
+  if (lowered.startsWith(routes.qa.toLowerCase())) return 'qa';
+  return 'general';
+}
+
+function buildPrompt({ sender, subject, body, route }) {
+  return [
+    '任务来源：邮件',
+    `任务类型：${route}`,
+    `发件人：${sender}`,
+    `邮件主题：${subject}`,
+    '邮件正文：',
+    body || '(空正文)',
+    '',
+    '请直接输出可用于邮件回复的最终正文。',
+    '不要输出思考过程、JSON、Markdown 代码块、日志。',
+    '如果任务信息不足，请直接列出最少的补充信息。',
+    '如果是搜索或网页操作，只保留关键结果与结论。',
+  ].join('\n');
+}
+
+async function invokeOpenClaw(prompt) {
+  if (config.openclaw.mode === 'cli') {
+    return invokeOpenClawCli(prompt);
+  }
+  return invokeOpenClawHttp(prompt);
+}
+
+async function invokeOpenClawHttp(prompt) {
+  if (!config.openclaw.httpUrl) {
+    throw new Error('OPENCLAW_HTTP_URL is required when OPENCLAW_MODE=http');
+  }
+
+  const headers = { 'content-type': 'application/json' };
+  if (config.openclaw.httpAuthHeader && config.openclaw.httpAuthToken) {
+    headers[config.openclaw.httpAuthHeader] = config.openclaw.httpAuthToken;
+  }
+
+  const response = await fetch(config.openclaw.httpUrl, {
+    method: config.openclaw.httpMethod,
+    headers,
+    body: JSON.stringify({ input: prompt }),
+    signal: AbortSignal.timeout(config.openclaw.httpTimeoutMs),
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenClaw HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.output || data.result || data.reply || JSON.stringify(data);
+}
+
+async function invokeOpenClawCli(prompt) {
+  if (!config.openclaw.cliCommand) {
+    throw new Error('OPENCLAW_CLI_COMMAND is required when OPENCLAW_MODE=cli');
+  }
+
+  const [command, ...args] = splitCommand(config.openclaw.cliCommand);
+  const { stdout } = await execFileAsync(command, [...args, prompt], {
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+function splitCommand(command) {
+  return command.match(/(?:[^\s"]+|"[^"]*")+/g).map((part) => part.replace(/^"|"$/g, ''));
+}
+
+function normalizeReply(reply) {
+  return String(reply || '').replace(/\r/g, '').trim() || '任务已处理，但未返回可发送内容。';
+}
+
+function buildReplySubject(subject) {
+  const prefix = config.mailReplySubjectPrefix.trim();
+  return subject.toLowerCase().startsWith(prefix.toLowerCase()) ? subject : `${prefix} ${subject}`;
+}
+
+async function ensureMailbox(imap, path) {
+  try {
+    await imap.mailboxCreate(path);
+  } catch (error) {
+    if (!String(error?.message || '').includes('exists')) {
+      throw error;
+    }
+  }
+}
+
+function required(name) {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required env: ${name}`);
+  }
+  return value;
+}
+
+function number(name, fallback) {
+  const value = process.env[name];
+  return value ? Number(value) : fallback;
+}
+
+function boolean(name, fallback) {
+  const value = process.env[name];
+  if (value == null) return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

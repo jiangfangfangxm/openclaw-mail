@@ -1,0 +1,11 @@
+[Unit]
+Description=Run OpenClaw mail polling every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Unit=openclaw-mail.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

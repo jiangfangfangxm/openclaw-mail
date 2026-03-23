@@ -1,0 +1,10 @@
+[Unit]
+Description=OpenClaw mail polling worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/openclaw-mail
+EnvironmentFile=/opt/openclaw-mail/.env
+ExecStart=/usr/bin/env node src/index.js
