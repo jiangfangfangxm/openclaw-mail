@@ -50,6 +50,7 @@ cp .env.example .env
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
+- `LOCK_FILE`：单实例锁文件路径，默认 `/tmp/openclaw-mail.lock`；用于避免 systemd / OpenClaw / 手工启动同时触发多个实例
 - `OPENCLAW_LOG_PROMPT`：是否把发送给 OpenClaw 的完整 prompt 打印到 stdout，默认 `false`
 - `OPENCLAW_LOG_RESPONSE`：是否把 OpenClaw 返回内容打印到 stdout，默认 `false`
 
@@ -129,6 +130,9 @@ sudo systemctl enable --now openclaw-mail.timer
 ```
 
 查看状态：
+
+> 如果你改成由 OpenClaw 定时启动，也**不要和 systemd timer 同时开启**。当前程序已经内置单实例锁，重复启动时后来的实例会直接退出，但最佳实践仍然是只保留一个调度器。
+
 
 ```bash
 systemctl status openclaw-mail.timer

@@ -4,6 +4,7 @@ import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import { htmlToText } from 'html-to-text';
 import { spawn } from 'node:child_process';
+import { open, unlink } from 'node:fs/promises';
 
 const config = {
   imap: {
@@ -48,9 +49,16 @@ const config = {
   replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
   logOpenClawPrompt: boolean('OPENCLAW_LOG_PROMPT', false),
   logOpenClawResponse: boolean('OPENCLAW_LOG_RESPONSE', false),
+  lockFile: process.env.LOCK_FILE || '/tmp/openclaw-mail.lock',
 };
 
 async function main() {
+  const lock = await acquireLock();
+  if (!lock) {
+    console.warn(`Another openclaw-mail process is already running. lock=${config.lockFile}`);
+    return;
+  }
+
   const imap = new ImapFlow({
     host: config.imap.host,
     port: config.imap.port,
@@ -60,8 +68,8 @@ async function main() {
 
   const smtp = nodemailer.createTransport(config.smtp);
 
-  await imap.connect();
   try {
+    await imap.connect();
     const archiveStrategy = await prepareArchiveMailbox(imap);
     await imap.mailboxOpen(config.imap.mailbox);
 
@@ -77,7 +85,41 @@ async function main() {
       await processMessage({ imap, smtp, uid, archiveStrategy });
     }
   } finally {
-    await imap.logout();
+    await safeLogout(imap);
+    await releaseLock(lock);
+  }
+}
+
+async function acquireLock() {
+  try {
+    const handle = await open(config.lockFile, 'wx');
+    await handle.writeFile(String(process.pid));
+    return handle;
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function releaseLock(handle) {
+  if (!handle) return;
+
+  try {
+    await handle.close();
+  } finally {
+    await unlink(config.lockFile).catch(() => {});
+  }
+}
+
+async function safeLogout(imap) {
+  try {
+    if (imap?.usable) {
+      await imap.logout();
+    }
+  } catch (error) {
+    console.warn(`IMAP logout failed: ${formatError(error)}`);
   }
 }
 
