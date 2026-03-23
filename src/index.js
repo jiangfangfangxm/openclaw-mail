@@ -19,6 +19,7 @@ const config = {
     },
     mailbox: process.env.IMAP_MAILBOX || 'INBOX',
     doneMailbox: process.env.IMAP_DONE_MAILBOX || '已完成',
+    createDoneMailbox: boolean('IMAP_DONE_MAILBOX_CREATE', false),
   },
   smtp: {
     host: required('SMTP_HOST'),
@@ -61,7 +62,7 @@ async function main() {
 
   await imap.connect();
   try {
-    await ensureMailbox(imap, config.imap.doneMailbox);
+    const archiveStrategy = await prepareArchiveMailbox(imap);
     await imap.mailboxOpen(config.imap.mailbox);
 
     const unseen = await imap.search({ seen: false });
@@ -73,14 +74,14 @@ async function main() {
     }
 
     for (const uid of targetIds) {
-      await processMessage({ imap, smtp, uid });
+      await processMessage({ imap, smtp, uid, archiveStrategy });
     }
   } finally {
     await imap.logout();
   }
 }
 
-async function processMessage({ imap, smtp, uid }) {
+async function processMessage({ imap, smtp, uid, archiveStrategy }) {
   const message = await imap.fetchOne(uid, { uid: true, envelope: true, source: true });
   const parsed = await simpleParser(message.source);
   const from = parsed.from?.value?.[0];
@@ -124,9 +125,60 @@ async function processMessage({ imap, smtp, uid }) {
     references: parsed.messageId,
   });
 
-  await imap.messageFlagsAdd(uid, ['\\Seen']);
-  await imap.messageMove(uid, config.imap.doneMailbox);
+  await completeMessage(imap, uid, archiveStrategy);
   console.log(`Processed UID ${uid} from ${from.address}`);
+}
+
+async function prepareArchiveMailbox(imap) {
+  const exists = await mailboxExists(imap, config.imap.doneMailbox);
+  if (exists) {
+    return { enabled: true, mailbox: config.imap.doneMailbox };
+  }
+
+  if (!config.imap.createDoneMailbox) {
+    console.warn([
+      `Archive mailbox "${config.imap.doneMailbox}" does not exist.`,
+      'Skipping move step and leaving processed messages as read in the source mailbox.',
+      'Set IMAP_DONE_MAILBOX_CREATE=true to let the worker try creating it automatically.',
+    ].join(' '));
+    return { enabled: false, mailbox: config.imap.doneMailbox };
+  }
+
+  try {
+    await imap.mailboxCreate(config.imap.doneMailbox);
+    console.log(`Created archive mailbox "${config.imap.doneMailbox}".`);
+    return { enabled: true, mailbox: config.imap.doneMailbox };
+  } catch (error) {
+    console.warn([
+      `Unable to create archive mailbox "${config.imap.doneMailbox}".`,
+      formatError(error),
+      'Processed messages will only be marked as read.',
+    ].join(' '));
+    return { enabled: false, mailbox: config.imap.doneMailbox };
+  }
+}
+
+async function completeMessage(imap, uid, archiveStrategy) {
+  await imap.messageFlagsAdd(uid, ['\\Seen']);
+
+  if (!archiveStrategy.enabled) {
+    return;
+  }
+
+  try {
+    await imap.messageMove(uid, archiveStrategy.mailbox);
+  } catch (error) {
+    console.warn([
+      `Failed to move UID ${uid} to "${archiveStrategy.mailbox}".`,
+      formatError(error),
+      'The message was kept in the source mailbox but marked as read.',
+    ].join(' '));
+  }
+}
+
+async function mailboxExists(imap, mailboxName) {
+  const mailboxes = await imap.list();
+  return mailboxes.some((mailbox) => mailbox.path === mailboxName);
 }
 
 function cleanMailBody(parsed) {
@@ -251,14 +303,8 @@ function buildReplySubject(subject) {
   return subject.toLowerCase().startsWith(prefix.toLowerCase()) ? subject : `${prefix} ${subject}`;
 }
 
-async function ensureMailbox(imap, path) {
-  try {
-    await imap.mailboxCreate(path);
-  } catch (error) {
-    if (!String(error?.message || '').includes('exists')) {
-      throw error;
-    }
-  }
+function formatError(error) {
+  return error?.responseText || error?.message || String(error);
 }
 
 function required(name) {

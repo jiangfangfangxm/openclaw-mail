@@ -42,6 +42,7 @@ cp .env.example .env
 - `IMAP_*`：收件箱连接信息
 - `SMTP_*`：回信发送信息
 - `IMAP_DONE_MAILBOX`：处理完成后移动到的文件夹，默认 `已完成`
+- `IMAP_DONE_MAILBOX_CREATE`：是否在不存在时自动创建归档文件夹，默认 `false`；像阿里云企业邮箱这类限制创建目录的服务建议保持关闭
 - `POLL_MAX_MESSAGES`：每次轮询最多处理的未读邮件数
 - `OPENCLAW_MODE=http|cli`：调用方式
 - `OPENCLAW_HTTP_URL`：HTTP 模式下的 OpenClaw 入口
@@ -134,7 +135,8 @@ journalctl -u openclaw-mail.service -f
 - 每次轮询只处理有限封未读邮件，避免堆积时单次任务过长
 - OpenClaw 调用失败时，会给发件人发送简短失败通知
 - 回复成功后才把邮件标记已读并移动到 `已完成`
-- `已完成` 文件夹会在首次运行时尝试自动创建
+- 默认不会主动创建 `已完成` 文件夹；若邮箱服务商支持并且你希望自动创建，可将 `IMAP_DONE_MAILBOX_CREATE=true`
+- 若归档目录不存在或移动失败，脚本会回退为“仅标记已读”，避免整次任务失败
 
 ### 3. HTTP / CLI 双模式
 
