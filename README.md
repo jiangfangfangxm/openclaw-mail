@@ -194,6 +194,8 @@ OPENCLAW_CLI_AGENT=default
 openclaw agent --agent <agent> --message "任务来源：邮件 ..."
 ```
 
+实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。
+
 ## 推荐部署建议
 
 如果你追求**简洁、稳定、节省 token**，推荐优先使用以下组合：

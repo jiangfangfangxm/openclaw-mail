@@ -3,10 +3,7 @@ import { ImapFlow } from 'imapflow';
 import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import { htmlToText } from 'html-to-text';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
+import { spawn } from 'node:child_process';
 
 const config = {
   imap: {
@@ -310,10 +307,36 @@ async function invokeOpenClawCli(prompt) {
   const args = ['agent', '--agent', config.openclaw.cliAgent, '--message', prompt];
 
   console.log(`[OpenClaw][CLI] ${command} agent --agent ${config.openclaw.cliAgent} --message <PROMPT>`);
-  const { stdout } = await execFileAsync(command, args, {
-    maxBuffer: 10 * 1024 * 1024,
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on('error', (error) => {
+      reject(error);
+    });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr || `OpenClaw CLI exited with code ${code}`));
+        return;
+      }
+
+      resolve(stdout);
+    });
   });
-  return stdout;
 }
 
 function normalizeReply(reply) {
