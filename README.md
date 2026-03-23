@@ -49,6 +49,7 @@ cp .env.example .env
 - `OPENCLAW_CLI_COMMAND`：CLI 模式命令，例如 `openclaw run --stdin`
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
+- `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
 
 ## OpenClaw 入参设计
 
@@ -133,8 +134,9 @@ journalctl -u openclaw-mail.service -f
 ### 2. 稳定性策略
 
 - 每次轮询只处理有限封未读邮件，避免堆积时单次任务过长
-- OpenClaw 调用失败时，会给发件人发送简短失败通知
-- 回复成功后才把邮件标记已读并移动到 `已完成`
+- OpenClaw 调用失败时，默认不回信、不归档、不标记已读，保留原邮件用于重试
+- 如需失败时也回一封提示邮件，可设置 `OPENCLAW_REPLY_ON_ERROR=true`，但邮件仍会保留未读
+- 只有成功拿到 OpenClaw 结果且 SMTP 回信成功后，才会把邮件标记已读并移动到 `已完成`
 - 默认不会主动创建 `已完成` 文件夹；若邮箱服务商支持并且你希望自动创建，可将 `IMAP_DONE_MAILBOX_CREATE=true`
 - 若归档目录不存在或移动失败，脚本会回退为“仅标记已读”，避免整次任务失败
 

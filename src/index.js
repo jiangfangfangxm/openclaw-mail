@@ -48,6 +48,7 @@ const config = {
   },
   pollMaxMessages: number('POLL_MAX_MESSAGES', 5),
   mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
+  replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
 };
 
 async function main() {
@@ -106,12 +107,21 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
     replyBody = await invokeOpenClaw(prompt);
   } catch (error) {
     console.error(`OpenClaw failed for UID ${uid}:`, error);
-    replyBody = [
-      '邮件任务处理失败。',
-      '',
-      `主题：${subject}`,
-      '请稍后重试，或把任务拆短后再次发送。',
-    ].join('\n');
+
+    if (config.replyOnOpenClawError) {
+      const fallbackReply = normalizeReply(buildFailureReply(subject)).slice(0, config.openclaw.maxReplyChars);
+      await smtp.sendMail({
+        from: config.smtp.auth.user,
+        to: from.address,
+        subject: buildReplySubject(subject),
+        text: fallbackReply,
+        inReplyTo: parsed.messageId,
+        references: parsed.messageId,
+      });
+      console.warn(`Sent fallback failure reply for UID ${uid}; leaving message unread for retry.`);
+    }
+
+    return;
   }
 
   const finalReply = normalizeReply(replyBody).slice(0, config.openclaw.maxReplyChars);
@@ -296,6 +306,15 @@ function splitCommand(command) {
 
 function normalizeReply(reply) {
   return String(reply || '').replace(/\r/g, '').trim() || '任务已处理，但未返回可发送内容。';
+}
+
+function buildFailureReply(subject) {
+  return [
+    '邮件任务处理失败。',
+    '',
+    `主题：${subject}`,
+    'OpenClaw 当前未返回有效结果，请稍后重试。',
+  ].join('\n');
 }
 
 function buildReplySubject(subject) {
