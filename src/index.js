@@ -368,18 +368,21 @@ function sanitizeOpenClawOutput(output) {
 }
 
 function isOpenClawNoiseLine(line) {
-  const normalized = line.trim();
+  const normalized = normalizeOpenClawLine(line);
   if (!normalized) return false;
 
   return [
     /^\[plugins\]/i,
     /^plugin(s)?[:：]/i,
     /^registered /i,
+    / registered /i,
+    /feishu_(doc|chat|wiki|drive|bitable)/i,
   ].some((pattern) => pattern.test(normalized));
 }
 
 function isOpenClawMetaLine(line) {
-  if (!line) return true;
+  const normalized = normalizeOpenClawLine(line);
+  if (!normalized) return true;
 
   return [
     /^根据邮件主题/i,
@@ -387,7 +390,14 @@ function isOpenClawMetaLine(line) {
     /^我需要/i,
     /^我将/i,
     /^让我/i,
-  ].some((pattern) => pattern.test(line));
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function normalizeOpenClawLine(line) {
+  return String(line || '')
+    .replace(/\u001B\[[0-9;]*m/g, '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim();
 }
 
 function buildFailureReply(subject) {
