@@ -49,6 +49,8 @@ const config = {
   pollMaxMessages: number('POLL_MAX_MESSAGES', 5),
   mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
   replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
+  logOpenClawPrompt: boolean('OPENCLAW_LOG_PROMPT', false),
+  logOpenClawResponse: boolean('OPENCLAW_LOG_RESPONSE', false),
 };
 
 async function main() {
@@ -257,10 +259,22 @@ function buildPrompt({ sender, subject, body, route }) {
 }
 
 async function invokeOpenClaw(prompt) {
-  if (config.openclaw.mode === 'cli') {
-    return invokeOpenClawCli(prompt);
+  if (config.logOpenClawPrompt) {
+    logBlock('OpenClaw prompt', prompt);
   }
-  return invokeOpenClawHttp(prompt);
+
+  let result;
+  if (config.openclaw.mode === 'cli') {
+    result = await invokeOpenClawCli(prompt);
+  } else {
+    result = await invokeOpenClawHttp(prompt);
+  }
+
+  if (config.logOpenClawResponse) {
+    logBlock('OpenClaw response', String(result));
+  }
+
+  return result;
 }
 
 async function invokeOpenClawHttp(prompt) {
@@ -272,6 +286,9 @@ async function invokeOpenClawHttp(prompt) {
   if (config.openclaw.httpAuthHeader && config.openclaw.httpAuthToken) {
     headers[config.openclaw.httpAuthHeader] = config.openclaw.httpAuthToken;
   }
+
+  console.log(`[OpenClaw][HTTP] ${config.openclaw.httpMethod} ${config.openclaw.httpUrl}`);
+  console.log(`[OpenClaw][HTTP] headers=${Object.keys(headers).join(',')}`);
 
   const response = await fetch(config.openclaw.httpUrl, {
     method: config.openclaw.httpMethod,
@@ -294,6 +311,7 @@ async function invokeOpenClawCli(prompt) {
   }
 
   const [command, ...args] = splitCommand(config.openclaw.cliCommand);
+  console.log(`[OpenClaw][CLI] ${[command, ...args, '<PROMPT>'].join(' ')}`);
   const { stdout } = await execFileAsync(command, [...args, prompt], {
     maxBuffer: 10 * 1024 * 1024,
   });
@@ -324,6 +342,12 @@ function buildReplySubject(subject) {
 
 function formatError(error) {
   return error?.responseText || error?.message || String(error);
+}
+
+function logBlock(title, content) {
+  console.log(`===== ${title} =====`);
+  console.log(content);
+  console.log(`===== end ${title} =====`);
 }
 
 function required(name) {

@@ -50,6 +50,8 @@ cp .env.example .env
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
+- `OPENCLAW_LOG_PROMPT`：是否把发送给 OpenClaw 的完整 prompt 打印到 stdout，默认 `false`
+- `OPENCLAW_LOG_RESPONSE`：是否把 OpenClaw 返回内容打印到 stdout，默认 `false`
 
 ## OpenClaw 入参设计
 
@@ -84,6 +86,21 @@ npm install
 ```bash
 npm start
 ```
+
+当前程序没有额外单独的日志文件；**现在看到的 stdout / stderr 就是运行日志**。
+
+如果你想看调用 OpenClaw 的具体指令和内容，可在 `.env` 里打开：
+
+```bash
+OPENCLAW_LOG_PROMPT=true
+OPENCLAW_LOG_RESPONSE=true
+```
+
+开启后：
+
+- HTTP 模式会打印请求方法、URL、header 名，以及发送给 OpenClaw 的 prompt 内容
+- CLI 模式会打印实际执行的命令（用 `<PROMPT>` 占位展示参数位置）以及 prompt 内容
+- 若开启 `OPENCLAW_LOG_RESPONSE=true`，还会打印 OpenClaw 的返回正文
 
 仅做语法检查：
 
