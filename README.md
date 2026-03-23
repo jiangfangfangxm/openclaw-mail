@@ -43,7 +43,7 @@ cp .env.example .env
 - `SMTP_*`：回信发送信息
 - `IMAP_DONE_MAILBOX`：处理完成后移动到的文件夹，默认 `已完成`
 - `IMAP_DONE_MAILBOX_CREATE`：是否在不存在时自动创建归档文件夹，默认 `false`；像阿里云企业邮箱这类限制创建目录的服务建议保持关闭
-- `POLL_MAX_MESSAGES`：每次轮询最多处理的未读邮件数
+- `POLL_MAX_MESSAGES`：每次轮询最多处理的未读邮件数，默认 `1`；推荐保持为 `1` 以确保每次只处理一封邮件，避免 OpenClaw 上下文串扰
 - `OPENCLAW_MODE=http|cli`：调用方式
 - `OPENCLAW_HTTP_URL`：HTTP 模式下的 OpenClaw 入口
 - `OPENCLAW_CLI_AGENT`：CLI 模式下使用的 agent 名，默认 `default`
@@ -150,7 +150,7 @@ journalctl -u openclaw-mail.service -f
 
 ### 2. 稳定性策略
 
-- 每次轮询只处理有限封未读邮件，避免堆积时单次任务过长
+- 默认每次轮询只处理 1 封未读邮件，避免同一轮中多封邮件共享 OpenClaw 运行上下文；如需提高吞吐，可手动调大 `POLL_MAX_MESSAGES`
 - OpenClaw 调用失败时，默认不回信、不归档、不标记已读，保留原邮件用于重试
 - 如需失败时也回一封提示邮件，可设置 `OPENCLAW_REPLY_ON_ERROR=true`，但邮件仍会保留未读
 - 只有成功拿到 OpenClaw 结果且 SMTP 回信成功后，才会把邮件标记已读并移动到 `已完成`

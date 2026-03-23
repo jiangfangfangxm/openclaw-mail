@@ -43,7 +43,7 @@ const config = {
       qa: process.env.OPENCLAW_ROUTE_QA || 'qa:',
     },
   },
-  pollMaxMessages: number('POLL_MAX_MESSAGES', 5),
+  pollMaxMessages: number('POLL_MAX_MESSAGES', 1),
   mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
   replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
   logOpenClawPrompt: boolean('OPENCLAW_LOG_PROMPT', false),
