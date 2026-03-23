@@ -46,7 +46,7 @@ cp .env.example .env
 - `POLL_MAX_MESSAGES`：每次轮询最多处理的未读邮件数
 - `OPENCLAW_MODE=http|cli`：调用方式
 - `OPENCLAW_HTTP_URL`：HTTP 模式下的 OpenClaw 入口
-- `OPENCLAW_CLI_COMMAND`：CLI 模式命令，例如 `openclaw run --stdin`
+- `OPENCLAW_CLI_AGENT`：CLI 模式下使用的 agent 名，默认 `default`
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
@@ -99,7 +99,7 @@ OPENCLAW_LOG_RESPONSE=true
 开启后：
 
 - HTTP 模式会打印请求方法、URL、header 名，以及发送给 OpenClaw 的 prompt 内容
-- CLI 模式会打印实际执行的命令（用 `<PROMPT>` 占位展示参数位置）以及 prompt 内容
+- CLI 模式会打印实际执行的命令 `openclaw agent --agent <agent> --message <PROMPT>` 以及 prompt 内容
 - 若开启 `OPENCLAW_LOG_RESPONSE=true`，还会打印 OpenClaw 的返回正文
 
 仅做语法检查：
@@ -175,22 +175,24 @@ journalctl -u openclaw-mail.service -f
 
 #### CLI 模式
 
-当 `OPENCLAW_MODE=cli` 时，会把 prompt 作为最后一个参数传给 `OPENCLAW_CLI_COMMAND`。
+当 `OPENCLAW_MODE=cli` 时，脚本会固定调用：
 
-例如：
+```bash
+openclaw agent --agent default --message "任务来源：邮件 ..."
+```
+
+如果你想切换 agent，可通过 `OPENCLAW_CLI_AGENT` 配置，例如：
 
 ```bash
 OPENCLAW_MODE=cli
-OPENCLAW_CLI_COMMAND="openclaw run"
+OPENCLAW_CLI_AGENT=default
 ```
 
-最终调用效果类似：
+最终执行命令格式始终为：
 
 ```bash
-openclaw run "任务来源：邮件 ..."
+openclaw agent --agent <agent> --message "任务来源：邮件 ..."
 ```
-
-如果你的 OpenClaw CLI 是从标准输入读取，可把这里的小实现再改成 stdin 方式。
 
 ## 推荐部署建议
 

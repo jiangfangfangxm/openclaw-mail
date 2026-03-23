@@ -37,7 +37,7 @@ const config = {
     httpAuthHeader: process.env.OPENCLAW_HTTP_AUTH_HEADER || '',
     httpAuthToken: process.env.OPENCLAW_HTTP_AUTH_TOKEN || '',
     httpTimeoutMs: number('OPENCLAW_HTTP_TIMEOUT_MS', 120000),
-    cliCommand: process.env.OPENCLAW_CLI_COMMAND || '',
+    cliAgent: process.env.OPENCLAW_CLI_AGENT || 'default',
     maxBodyChars: number('OPENCLAW_MAX_BODY_CHARS', 4000),
     maxReplyChars: number('OPENCLAW_MAX_REPLY_CHARS', 6000),
     routes: {
@@ -306,20 +306,14 @@ async function invokeOpenClawHttp(prompt) {
 }
 
 async function invokeOpenClawCli(prompt) {
-  if (!config.openclaw.cliCommand) {
-    throw new Error('OPENCLAW_CLI_COMMAND is required when OPENCLAW_MODE=cli');
-  }
+  const command = 'openclaw';
+  const args = ['agent', '--agent', config.openclaw.cliAgent, '--message', prompt];
 
-  const [command, ...args] = splitCommand(config.openclaw.cliCommand);
-  console.log(`[OpenClaw][CLI] ${[command, ...args, '<PROMPT>'].join(' ')}`);
-  const { stdout } = await execFileAsync(command, [...args, prompt], {
+  console.log(`[OpenClaw][CLI] ${command} agent --agent ${config.openclaw.cliAgent} --message <PROMPT>`);
+  const { stdout } = await execFileAsync(command, args, {
     maxBuffer: 10 * 1024 * 1024,
   });
   return stdout;
-}
-
-function splitCommand(command) {
-  return command.match(/(?:[^\s"]+|"[^"]*")+/g).map((part) => part.replace(/^"|"$/g, ''));
 }
 
 function normalizeReply(reply) {
