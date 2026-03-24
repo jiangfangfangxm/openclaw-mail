@@ -73,6 +73,9 @@ async function main() {
     auth: config.imap.auth,
     disableAutoIdle: config.imap.disableAutoIdle,
   });
+  imap.on('error', (error) => {
+    console.warn(`IMAP connection event error: ${formatError(error)}`);
+  });
 
   const smtp = nodemailer.createTransport(config.smtp);
 
@@ -229,14 +232,14 @@ async function prepareArchiveMailbox(imap) {
 }
 
 async function completeMessage(imap, uid, archiveStrategy) {
-  await imap.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+  await runImapActionWithReconnect(imap, () => imap.messageFlagsAdd(uid, ['\\Seen'], { uid: true }));
 
   if (!archiveStrategy.enabled) {
     return;
   }
 
   try {
-    await imap.messageMove(uid, archiveStrategy.mailbox, { uid: true });
+    await runImapActionWithReconnect(imap, () => imap.messageMove(uid, archiveStrategy.mailbox, { uid: true }));
   } catch (error) {
     console.warn([
       `Failed to move UID ${uid} to "${archiveStrategy.mailbox}".`,
@@ -244,6 +247,44 @@ async function completeMessage(imap, uid, archiveStrategy) {
       'The message was kept in the source mailbox but marked as read.',
     ].join(' '));
   }
+}
+
+async function runImapActionWithReconnect(imap, action) {
+  try {
+    return await action();
+  } catch (error) {
+    if (!isRecoverableImapError(error)) {
+      throw error;
+    }
+
+    console.warn(`IMAP action failed, attempting reconnect: ${formatError(error)}`);
+    await reconnectImapMailbox(imap);
+    return action();
+  }
+}
+
+async function reconnectImapMailbox(imap) {
+  if (imap.usable) {
+    try {
+      await imap.logout();
+    } catch (error) {
+      console.warn(`IMAP logout before reconnect failed: ${formatError(error)}`);
+    }
+  }
+
+  await imap.connect();
+  await imap.mailboxOpen(config.imap.mailbox);
+}
+
+function isRecoverableImapError(error) {
+  const code = String(error?.code || '');
+  const message = String(error?.message || '');
+  return [
+    code === 'ETIMEDOUT',
+    code === 'ECONNRESET',
+    code === 'EPIPE',
+    message.includes('Connection not available'),
+  ].some(Boolean);
 }
 
 async function mailboxExists(imap, mailboxName) {
