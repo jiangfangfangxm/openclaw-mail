@@ -4,7 +4,9 @@ import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import { htmlToText } from 'html-to-text';
 import { spawn } from 'node:child_process';
-import { open, unlink } from 'node:fs/promises';
+import { open, unlink, readdir, rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import path from 'node:path';
 
 const config = {
   imap: {
@@ -51,6 +53,7 @@ const config = {
   logOpenClawPrompt: boolean('OPENCLAW_LOG_PROMPT', false),
   logOpenClawResponse: boolean('OPENCLAW_LOG_RESPONSE', false),
   lockFile: process.env.LOCK_FILE || '/tmp/openclaw-mail.lock',
+  openclawSessionsDir: process.env.OPENCLAW_SESSIONS_DIR || path.join(homedir(), '.openclaw', 'agents', 'bankriskmail', 'sessions'),
 };
 
 async function main() {
@@ -125,68 +128,72 @@ async function safeLogout(imap) {
 }
 
 async function processMessage({ imap, smtp, uid, archiveStrategy }) {
-  const message = await imap.fetchOne(uid, { uid: true, envelope: true, source: true }, { uid: true });
-  if (!message?.source) {
-    console.warn(`Skipping UID ${uid}: message source is empty.`);
-    return;
-  }
-
-  const parsed = await simpleParser(message.source);
-  const from = parsed.from?.value?.[0];
-  const senderName = from?.name?.trim() || '';
-
-  if (!from?.address) {
-    console.warn(`Skipping UID ${uid}: missing sender address.`);
-    return;
-  }
-
-  const subject = (parsed.subject || '').trim() || '(no subject)';
-  const cleanBody = cleanMailBody(parsed).slice(0, config.openclaw.maxBodyChars);
-  const route = detectRoute(subject, config.openclaw.routes);
-  const prompt = buildPrompt({
-    sender: from.address,
-    senderName,
-    subject,
-    body: cleanBody,
-    route,
-  });
-  const sessionId = buildOpenClawSessionId();
-
-  let replyBody;
   try {
-    replyBody = await invokeOpenClaw({ prompt, sender: from.address, senderName, sessionId });
-  } catch (error) {
-    console.error(`OpenClaw failed for UID ${uid}:`, error);
-
-    if (config.replyOnOpenClawError) {
-      const fallbackReply = normalizeReply(buildFailureReply(subject)).slice(0, config.openclaw.maxReplyChars);
-      await smtp.sendMail({
-        from: config.smtp.auth.user,
-        to: from.address,
-        subject: buildReplySubject(subject),
-        text: fallbackReply,
-        inReplyTo: parsed.messageId,
-        references: parsed.messageId,
-      });
-      console.warn(`Sent fallback failure reply for UID ${uid}; leaving message unread for retry.`);
+    const message = await imap.fetchOne(uid, { uid: true, envelope: true, source: true }, { uid: true });
+    if (!message?.source) {
+      console.warn(`Skipping UID ${uid}: message source is empty.`);
+      return;
     }
 
-    return;
+    const parsed = await simpleParser(message.source);
+    const from = parsed.from?.value?.[0];
+    const senderName = from?.name?.trim() || '';
+
+    if (!from?.address) {
+      console.warn(`Skipping UID ${uid}: missing sender address.`);
+      return;
+    }
+
+    const subject = (parsed.subject || '').trim() || '(no subject)';
+    const cleanBody = cleanMailBody(parsed).slice(0, config.openclaw.maxBodyChars);
+    const route = detectRoute(subject, config.openclaw.routes);
+    const prompt = buildPrompt({
+      sender: from.address,
+      senderName,
+      subject,
+      body: cleanBody,
+      route,
+    });
+    const sessionId = buildOpenClawSessionId();
+
+    let replyBody;
+    try {
+      replyBody = await invokeOpenClaw({ prompt, sender: from.address, senderName, sessionId });
+    } catch (error) {
+      console.error(`OpenClaw failed for UID ${uid}:`, error);
+
+      if (config.replyOnOpenClawError) {
+        const fallbackReply = normalizeReply(buildFailureReply(subject)).slice(0, config.openclaw.maxReplyChars);
+        await smtp.sendMail({
+          from: config.smtp.auth.user,
+          to: from.address,
+          subject: buildReplySubject(subject),
+          text: fallbackReply,
+          inReplyTo: parsed.messageId,
+          references: parsed.messageId,
+        });
+        console.warn(`Sent fallback failure reply for UID ${uid}; leaving message unread for retry.`);
+      }
+
+      return;
+    }
+
+    const finalReply = normalizeReply(replyBody).slice(0, config.openclaw.maxReplyChars);
+
+    await smtp.sendMail({
+      from: config.smtp.auth.user,
+      to: from.address,
+      subject: buildReplySubject(subject),
+      text: finalReply,
+      inReplyTo: parsed.messageId,
+      references: parsed.messageId,
+    });
+
+    await completeMessage(imap, uid, archiveStrategy);
+    console.log(`Processed UID ${uid} from ${from.address}`);
+  } finally {
+    await cleanupOpenClawSessions();
   }
-
-  const finalReply = normalizeReply(replyBody).slice(0, config.openclaw.maxReplyChars);
-
-  await smtp.sendMail({
-    from: config.smtp.auth.user,
-    to: from.address,
-    subject: buildReplySubject(subject),
-    text: finalReply,
-    inReplyTo: parsed.messageId,
-    references: parsed.messageId,
-  });
-
-  await completeMessage(imap, uid, archiveStrategy);
-  console.log(`Processed UID ${uid} from ${from.address}`);
 }
 
 async function prepareArchiveMailbox(imap) {
@@ -239,6 +246,26 @@ async function completeMessage(imap, uid, archiveStrategy) {
 async function mailboxExists(imap, mailboxName) {
   const mailboxes = await imap.list();
   return mailboxes.some((mailbox) => mailbox.path === mailboxName);
+}
+
+async function cleanupOpenClawSessions() {
+  const sessionDir = config.openclawSessionsDir;
+
+  try {
+    const names = await readdir(sessionDir);
+    for (const name of names) {
+      await rm(path.join(sessionDir, name), { recursive: true, force: true });
+    }
+
+    if (names.length > 0) {
+      console.log(`Cleared ${names.length} OpenClaw session item(s) from ${sessionDir}`);
+    }
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return;
+    }
+    console.warn(`Failed to clean OpenClaw sessions: ${formatError(error)}`);
+  }
 }
 
 function cleanMailBody(parsed) {
