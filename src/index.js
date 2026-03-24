@@ -54,6 +54,7 @@ const config = {
   logOpenClawResponse: boolean('OPENCLAW_LOG_RESPONSE', false),
   lockFile: process.env.LOCK_FILE || '/tmp/openclaw-mail.lock',
   openclawSessionsDir: process.env.OPENCLAW_SESSIONS_DIR || path.join(homedir(), '.openclaw', 'agents', 'bankriskmail', 'sessions'),
+  openclawCleanSessions: boolean('OPENCLAW_CLEAN_SESSIONS', true),
 };
 
 async function main() {
@@ -153,7 +154,9 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
       body: cleanBody,
       route,
     });
-    await cleanupOpenClawSessions();
+    if (config.openclawCleanSessions) {
+      await cleanupOpenClawSessions();
+    }
     const sessionId = buildOpenClawSessionId();
 
     let replyBody;

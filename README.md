@@ -52,7 +52,8 @@ cp .env.example .env
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
 - `LOCK_FILE`：单实例锁文件路径，默认 `/tmp/openclaw-mail.lock`；用于避免 systemd / OpenClaw / 手工启动同时触发多个实例
-- `OPENCLAW_SESSIONS_DIR`：每封邮件处理结束后要清理的 OpenClaw 会话目录，默认 `/home/forrestmo/.openclaw/agents/bankriskmail/sessions`
+- `OPENCLAW_SESSIONS_DIR`：会话历史清理目录，默认 `/home/forrestmo/.openclaw/agents/bankriskmail/sessions`
+- `OPENCLAW_CLEAN_SESSIONS`：是否在每封邮件处理前清理会话历史，默认 `true`；调试时可设为 `false`
 - `OPENCLAW_LOG_PROMPT`：是否把发送给 OpenClaw 的完整 prompt 打印到 stdout，默认 `false`
 - `OPENCLAW_LOG_RESPONSE`：是否把 OpenClaw 返回内容打印到 stdout，默认 `false`
 
@@ -164,7 +165,7 @@ journalctl -u openclaw-mail.service -f
 - 若归档目录不存在或移动失败，脚本会回退为“仅标记已读”，避免整次任务失败
 - CLI 模式下如果 OpenClaw 把插件注册日志或过程性提示混到 stdout，脚本会先剥离 `[plugins] ...` 等噪音行，再把净化后的正文用于回邮
 - 如果 OpenClaw 错误地把多封邮件的回复合并在一次输出里，脚本会按“回复xxx / 邮件回复 / 致某某”分段，并优先提取当前发件人对应的那一段再回邮
-- 每封邮件开始处理前，脚本会先清理 `OPENCLAW_SESSIONS_DIR` 目录下的会话历史文件，确保本次运行使用干净上下文；处理完成后会保留本次历史，便于排查
+- 默认每封邮件开始处理前，脚本会先清理 `OPENCLAW_SESSIONS_DIR` 目录下的会话历史文件，确保本次运行使用干净上下文；处理完成后会保留本次历史，便于排查。调试时可将 `OPENCLAW_CLEAN_SESSIONS=false` 暂时关闭该行为
 
 ### 3. HTTP / CLI 双模式
 
