@@ -150,9 +150,11 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
     body: cleanBody,
     route,
   });
+  const sessionId = buildOpenClawSessionId();
+
   let replyBody;
   try {
-    replyBody = await invokeOpenClaw({ prompt, sender: from.address, senderName });
+    replyBody = await invokeOpenClaw({ prompt, sender: from.address, senderName, sessionId });
   } catch (error) {
     console.error(`OpenClaw failed for UID ${uid}:`, error);
 
@@ -307,14 +309,15 @@ function buildPrompt({ sender, senderName, subject, body, route }) {
   ].join('\n');
 }
 
-async function invokeOpenClaw({ prompt, sender, senderName }) {
+async function invokeOpenClaw({ prompt, sender, senderName, sessionId }) {
   if (config.logOpenClawPrompt) {
     logBlock('OpenClaw prompt', prompt);
+    if (sessionId) console.log(`[OpenClaw] session-id=${sessionId}`);
   }
 
   let result;
   if (config.openclaw.mode === 'cli') {
-    result = await invokeOpenClawCli(prompt);
+    result = await invokeOpenClawCli(prompt, sessionId);
   } else {
     result = await invokeOpenClawHttp(prompt);
   }
@@ -365,11 +368,11 @@ async function invokeOpenClawHttp(prompt) {
   return data.output || data.result || data.reply || JSON.stringify(data);
 }
 
-async function invokeOpenClawCli(prompt) {
+async function invokeOpenClawCli(prompt, sessionId) {
   const command = config.openclaw.cliBin;
-  const args = ['agent', '--local', '--agent', config.openclaw.cliAgent, '--message', prompt];
+  const args = ['agent', '--local', '--agent', config.openclaw.cliAgent, '--session-id', sessionId, '--message', prompt];
 
-  console.log(`[OpenClaw][CLI] ${command} agent --local --agent ${config.openclaw.cliAgent} --message <PROMPT>`);
+  console.log(`[OpenClaw][CLI] ${command} agent --local --agent ${config.openclaw.cliAgent} --session-id ${sessionId} --message <PROMPT>`);
 
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, {
@@ -400,6 +403,10 @@ async function invokeOpenClawCli(prompt) {
       resolve(stdout);
     });
   });
+}
+
+function buildOpenClawSessionId() {
+  return `mail-${Date.now()}-${process.hrtime.bigint()}`;
 }
 
 function normalizeReply(reply) {

@@ -185,7 +185,7 @@ journalctl -u openclaw-mail.service -f
 当 `OPENCLAW_MODE=cli` 时，脚本会固定调用：
 
 ```bash
-/home/forrestmo/.npm-global/bin/openclaw agent --local --agent bankriskmail --message "任务来源：邮件 ..."
+/home/forrestmo/.npm-global/bin/openclaw agent --local --agent bankriskmail --session-id "mail-<唯一ID>" --message "任务来源：邮件 ..."
 ```
 
 如果你想切换 agent，可通过 `OPENCLAW_CLI_AGENT` 配置，例如：
@@ -198,10 +198,10 @@ OPENCLAW_CLI_AGENT=bankriskmail
 最终执行命令格式始终为：
 
 ```bash
-/home/forrestmo/.npm-global/bin/openclaw agent --local --agent <agent> --message "任务来源：邮件 ..."
+/home/forrestmo/.npm-global/bin/openclaw agent --local --agent <agent> --session-id "mail-<唯一ID>" --message "任务来源：邮件 ..."
 ```
 
-实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。CLI 模式使用 `--local` 启动单次本地会话，不再复用历史 session；默认调用路径为 `/home/forrestmo/.npm-global/bin/openclaw`，也可通过 `OPENCLAW_CLI_BIN` 覆盖。
+实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。CLI 模式使用 `--local` 启动单次本地会话，并为每封邮件生成一次性的唯一 `session-id`（形如 `mail-时间戳-高精度计数`），避免不同邮件之间复用同一个 OpenClaw 上下文；默认调用路径为 `/home/forrestmo/.npm-global/bin/openclaw`，也可通过 `OPENCLAW_CLI_BIN` 覆盖。
 
 ## 推荐部署建议
 
