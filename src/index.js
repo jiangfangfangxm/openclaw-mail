@@ -128,7 +128,6 @@ async function safeLogout(imap) {
 }
 
 async function processMessage({ imap, smtp, uid, archiveStrategy }) {
-  try {
     const message = await imap.fetchOne(uid, { uid: true, envelope: true, source: true }, { uid: true });
     if (!message?.source) {
       console.warn(`Skipping UID ${uid}: message source is empty.`);
@@ -154,6 +153,7 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
       body: cleanBody,
       route,
     });
+    await cleanupOpenClawSessions();
     const sessionId = buildOpenClawSessionId();
 
     let replyBody;
@@ -191,9 +191,6 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
 
     await completeMessage(imap, uid, archiveStrategy);
     console.log(`Processed UID ${uid} from ${from.address}`);
-  } finally {
-    await cleanupOpenClawSessions();
-  }
 }
 
 async function prepareArchiveMailbox(imap) {
