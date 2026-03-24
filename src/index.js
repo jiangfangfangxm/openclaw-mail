@@ -20,6 +20,7 @@ const config = {
     mailbox: process.env.IMAP_MAILBOX || 'INBOX',
     doneMailbox: process.env.IMAP_DONE_MAILBOX || '已完成',
     createDoneMailbox: boolean('IMAP_DONE_MAILBOX_CREATE', false),
+    disableAutoIdle: boolean('IMAP_DISABLE_AUTO_IDLE', true),
   },
   smtp: {
     host: required('SMTP_HOST'),
@@ -39,6 +40,7 @@ const config = {
     httpTimeoutMs: number('OPENCLAW_HTTP_TIMEOUT_MS', 120000),
     cliBin: process.env.OPENCLAW_CLI_BIN || '/home/forrestmo/.npm-global/bin/openclaw',
     cliAgent: process.env.OPENCLAW_CLI_AGENT || 'bankriskmail',
+    cliTimeoutMs: number('OPENCLAW_CLI_TIMEOUT_MS', 180000),
     maxBodyChars: number('OPENCLAW_MAX_BODY_CHARS', 4000),
     maxReplyChars: number('OPENCLAW_MAX_REPLY_CHARS', 6000),
     routes: {
@@ -69,6 +71,7 @@ async function main() {
     port: config.imap.port,
     secure: config.imap.secure,
     auth: config.imap.auth,
+    disableAutoIdle: config.imap.disableAutoIdle,
   });
 
   const smtp = nodemailer.createTransport(config.smtp);
@@ -408,6 +411,12 @@ async function invokeOpenClawCli(prompt, sessionId) {
 
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill('SIGTERM');
+    }, config.openclaw.cliTimeoutMs);
 
     proc.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -418,10 +427,18 @@ async function invokeOpenClawCli(prompt, sessionId) {
     });
 
     proc.on('error', (error) => {
+      clearTimeout(timer);
       reject(error);
     });
 
     proc.on('close', (code) => {
+      clearTimeout(timer);
+
+      if (timedOut) {
+        reject(new Error(`OpenClaw CLI timed out after ${config.openclaw.cliTimeoutMs}ms`));
+        return;
+      }
+
       if (code !== 0) {
         reject(new Error(stderr || `OpenClaw CLI exited with code ${code}`));
         return;

@@ -43,11 +43,13 @@ cp .env.example .env
 - `SMTP_*`：回信发送信息
 - `IMAP_DONE_MAILBOX`：处理完成后移动到的文件夹，默认 `已完成`
 - `IMAP_DONE_MAILBOX_CREATE`：是否在不存在时自动创建归档文件夹，默认 `false`；像阿里云企业邮箱这类限制创建目录的服务建议保持关闭
+- `IMAP_DISABLE_AUTO_IDLE`：是否关闭 IMAP 自动 IDLE，默认 `true`；建议开启以避免 OpenClaw 长调用期间的 IDLE 断连噪音
 - `POLL_MAX_MESSAGES`：每次轮询最多处理的未读邮件数，默认 `1`；推荐保持为 `1` 以确保每次只处理一封邮件，避免 OpenClaw 上下文串扰
 - `OPENCLAW_MODE=http|cli`：调用方式
 - `OPENCLAW_HTTP_URL`：HTTP 模式下的 OpenClaw 入口
 - `OPENCLAW_CLI_BIN`：CLI 模式下 OpenClaw 可执行文件路径，默认 `/home/forrestmo/.npm-global/bin/openclaw`
 - `OPENCLAW_CLI_AGENT`：CLI 模式下使用的 agent 名，默认 `bankriskmail`
+- `OPENCLAW_CLI_TIMEOUT_MS`：CLI 调用超时（毫秒），默认 `180000`（3 分钟）
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
@@ -204,7 +206,7 @@ OPENCLAW_CLI_AGENT=bankriskmail
 /home/forrestmo/.npm-global/bin/openclaw agent --local --agent <agent> --session-id "mail-<唯一ID>" --message "任务来源：邮件 ..."
 ```
 
-实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。CLI 模式使用 `--local` 启动单次本地会话，并为每封邮件生成一次性的唯一 `session-id`（形如 `mail-时间戳-高精度计数`），避免不同邮件之间复用同一个 OpenClaw 上下文；默认调用路径为 `/home/forrestmo/.npm-global/bin/openclaw`，也可通过 `OPENCLAW_CLI_BIN` 覆盖。
+实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。CLI 模式使用 `--local` 启动单次本地会话，并为每封邮件生成一次性的唯一 `session-id`（形如 `mail-时间戳-高精度计数`），避免不同邮件之间复用同一个 OpenClaw 上下文；默认调用路径为 `/home/forrestmo/.npm-global/bin/openclaw`，也可通过 `OPENCLAW_CLI_BIN` 覆盖。为避免长时间卡住，脚本会在 `OPENCLAW_CLI_TIMEOUT_MS` 到达后终止 CLI 并报错。
 
 ## 推荐部署建议
 
