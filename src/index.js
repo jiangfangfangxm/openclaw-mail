@@ -416,7 +416,7 @@ function cleanMailBody(parsed) {
   return cleaned
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
-    .replace(/--\s*\n[\s\S]*$/m, '')
+    .replace(/(?:^|\n)--[ \t]*\n[\s\S]*$/, '')
     .trim();
 }
 
