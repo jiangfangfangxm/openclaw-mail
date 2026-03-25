@@ -53,7 +53,7 @@ cp .env.example .env
 - `OPENCLAW_CLI_BIN`：CLI 模式下 OpenClaw 可执行文件路径，默认 `/home/forrestmo/.npm-global/bin/openclaw`
 - `OPENCLAW_CLI_AGENT`：CLI 模式下使用的 agent 名，默认 `bankriskmail`
 - `OPENCLAW_CLI_TIMEOUT_MS`：CLI 调用超时（毫秒），默认 `180000`（3 分钟）
-- `OPENCLAW_MAX_RETRIES`：OpenClaw 失败最大重试次数，默认 `3`；达到上限后邮件会按失败策略处理，不再无限重试
+- `OPENCLAW_MAX_RETRIES`：OpenClaw 失败最大重试次数，默认 `3`；超过上限后邮件会按失败策略处理，不再无限重试
 - `OPENCLAW_RETRY_BACKOFF_SECONDS`：重试退避秒数列表，默认 `60,300,1800`；超过列表长度时使用最后一个值
 - `OPENCLAW_RETRY_STATE_FILE`：重试状态持久化文件，默认 `/tmp/openclaw-mail-retries.json`
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
@@ -165,7 +165,7 @@ journalctl -u openclaw-mail.service -f
 
 - 默认每次轮询只处理 1 封未读邮件，避免同一轮中多封邮件共享 OpenClaw 运行上下文；如需提高吞吐，可手动调大 `POLL_MAX_MESSAGES`
 - OpenClaw 调用失败会按 `OPENCLAW_RETRY_BACKOFF_SECONDS` 进行退避重试，并把尝试次数写入 `OPENCLAW_RETRY_STATE_FILE`
-- 达到 `OPENCLAW_MAX_RETRIES` 后，邮件会停止重试并标记已读；若失败文件夹可用则移动到 `IMAP_FAILED_MAILBOX`
+- 超过 `OPENCLAW_MAX_RETRIES` 后，邮件会停止重试并标记已读；若失败文件夹可用则移动到 `IMAP_FAILED_MAILBOX`
 - 如需最终失败时给发件人发送提示邮件，可设置 `OPENCLAW_REPLY_ON_ERROR=true`
 - 只有成功拿到 OpenClaw 结果且 SMTP 回信成功后，才会把邮件标记已读并移动到 `已完成`
 - 默认不会主动创建 `已完成` 文件夹；若邮箱服务商支持并且你希望自动创建，可将 `IMAP_DONE_MAILBOX_CREATE=true`

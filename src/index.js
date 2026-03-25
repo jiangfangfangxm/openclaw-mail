@@ -249,7 +249,7 @@ async function processMessage({ imap, smtp, uid, archiveStrategy, failedStrategy
       console.error(`OpenClaw failed for UID ${uid}:`, error);
       const attempts = Number(retryEntry?.attempts || 0) + 1;
       const maxRetries = Math.max(1, config.maxRetries);
-      if (attempts >= maxRetries) {
+      if (attempts > maxRetries) {
         delete retryState[retryKey];
         await saveRetryState(retryState);
 
