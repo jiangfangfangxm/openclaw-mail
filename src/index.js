@@ -464,14 +464,9 @@ async function invokeOpenClaw({ prompt, sender, senderName, sessionId }) {
     logBlock('OpenClaw response (raw)', String(result));
   }
 
-  const cleanedResult = sanitizeOpenClawOutput(result);
-  const isolatedResult = isolateReplyForCurrentMail(cleanedResult, { sender, senderName });
+  const isolatedResult = isolateReplyForCurrentMail(result, { sender, senderName });
 
-  if (config.logOpenClawResponse && cleanedResult !== String(result)) {
-    logBlock('OpenClaw response (sanitized)', cleanedResult);
-  }
-
-  if (config.logOpenClawResponse && isolatedResult !== cleanedResult) {
+  if (config.logOpenClawResponse && isolatedResult !== String(result).trim()) {
     logBlock('OpenClaw response (isolated)', isolatedResult);
   }
 
@@ -563,50 +558,6 @@ function buildOpenClawSessionId() {
 
 function normalizeReply(reply) {
   return String(reply || '').replace(/\r/g, '').trim() || '任务已处理，但未返回可发送内容。';
-}
-
-function sanitizeOpenClawOutput(output) {
-  const lines = String(output || '')
-    .replace(/\r/g, '')
-    .split('\n')
-    .map((line) => line.trimEnd());
-
-  const filtered = lines.filter((line) => !isOpenClawNoiseLine(line));
-
-  while (filtered.length > 0 && isOpenClawMetaLine(filtered[0].trim())) {
-    filtered.shift();
-  }
-
-  return filtered
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-function isOpenClawNoiseLine(line) {
-  const normalized = normalizeOpenClawLine(line);
-  if (!normalized) return false;
-
-  return [
-    /^\[plugins\]/i,
-    /^plugin(s)?[:：]/i,
-    /^registered /i,
-    / registered /i,
-    /feishu_(doc|chat|wiki|drive|bitable)/i,
-  ].some((pattern) => pattern.test(normalized));
-}
-
-function isOpenClawMetaLine(line) {
-  const normalized = normalizeOpenClawLine(line);
-  if (!normalized) return true;
-
-  return [
-    /^根据邮件主题/i,
-    /^由于邮件正文为空/i,
-    /^我需要/i,
-    /^我将/i,
-    /^让我/i,
-  ].some((pattern) => pattern.test(normalized));
 }
 
 function normalizeOpenClawLine(line) {
