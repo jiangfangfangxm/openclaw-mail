@@ -4,7 +4,7 @@ import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import { htmlToText } from 'html-to-text';
 import { spawn } from 'node:child_process';
-import { open, unlink, readdir, rm } from 'node:fs/promises';
+import { open, unlink, readdir, rm, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -108,7 +108,21 @@ async function acquireLock() {
     return handle;
   } catch (error) {
     if (error?.code === 'EEXIST') {
-      return null;
+      const cleared = await clearStaleLockFile();
+      if (!cleared) {
+        return null;
+      }
+
+      try {
+        const handle = await open(config.lockFile, 'wx');
+        await handle.writeFile(String(process.pid));
+        return handle;
+      } catch (retryError) {
+        if (retryError?.code === 'EEXIST') {
+          return null;
+        }
+        throw retryError;
+      }
     }
     throw error;
   }
@@ -121,6 +135,41 @@ async function releaseLock(handle) {
     await handle.close();
   } finally {
     await unlink(config.lockFile).catch(() => {});
+  }
+}
+
+async function clearStaleLockFile() {
+  try {
+    const content = await readFile(config.lockFile, 'utf8');
+    const pid = Number.parseInt(String(content).trim(), 10);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      await unlink(config.lockFile).catch(() => {});
+      return true;
+    }
+
+    if (isProcessAlive(pid)) {
+      return false;
+    }
+
+    console.warn(`Found stale lock file with dead pid=${pid}, removing ${config.lockFile}`);
+    await unlink(config.lockFile).catch(() => {});
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return true;
+    }
+
+    console.warn(`Failed to inspect lock file ${config.lockFile}: ${formatError(error)}`);
+    return false;
+  }
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
   }
 }
 

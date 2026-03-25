@@ -53,7 +53,7 @@ cp .env.example .env
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
-- `LOCK_FILE`：单实例锁文件路径，默认 `/tmp/openclaw-mail.lock`；用于避免 systemd / OpenClaw / 手工启动同时触发多个实例
+- `LOCK_FILE`：单实例锁文件路径，默认 `/tmp/openclaw-mail.lock`；用于避免 systemd / OpenClaw / 手工启动同时触发多个实例。若检测到锁文件里的 PID 已不存在，脚本会自动清理陈旧锁
 - `OPENCLAW_SESSIONS_DIR`：会话历史清理目录，默认 `/home/forrestmo/.openclaw/agents/bankriskmail/sessions`
 - `OPENCLAW_CLEAN_SESSIONS`：是否在每封邮件处理前清理会话历史，默认 `true`；调试时可设为 `false`
 - `OPENCLAW_LOG_PROMPT`：是否把发送给 OpenClaw 的完整 prompt 打印到 stdout，默认 `false`
