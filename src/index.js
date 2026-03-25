@@ -50,6 +50,7 @@ const config = {
     },
   },
   pollMaxMessages: number('POLL_MAX_MESSAGES', 1),
+  consumerConcurrency: number('OPENCLAW_CONSUMER_CONCURRENCY', 1),
   mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
   replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
   logOpenClawPrompt: boolean('OPENCLAW_LOG_PROMPT', false),
@@ -66,16 +67,7 @@ async function main() {
     return;
   }
 
-  const imap = new ImapFlow({
-    host: config.imap.host,
-    port: config.imap.port,
-    secure: config.imap.secure,
-    auth: config.imap.auth,
-    disableAutoIdle: config.imap.disableAutoIdle,
-  });
-  imap.on('error', (error) => {
-    console.warn(`IMAP connection event error: ${formatError(error)}`);
-  });
+  const imap = createImapClient();
 
   const smtp = nodemailer.createTransport(config.smtp);
 
@@ -92,13 +84,32 @@ async function main() {
       return;
     }
 
-    for (const uid of targetIds) {
-      await processMessage({ imap, smtp, uid, archiveStrategy });
-    }
+    await processUidsWithConcurrency({
+      uids: targetIds,
+      smtp,
+      archiveStrategy,
+      concurrency: config.consumerConcurrency,
+    });
   } finally {
     await safeLogout(imap);
     await releaseLock(lock);
   }
+}
+
+function createImapClient() {
+  const imap = new ImapFlow({
+    host: config.imap.host,
+    port: config.imap.port,
+    secure: config.imap.secure,
+    auth: config.imap.auth,
+    disableAutoIdle: config.imap.disableAutoIdle,
+  });
+
+  imap.on('error', (error) => {
+    console.warn(`IMAP connection event error: ${formatError(error)}`);
+  });
+
+  return imap;
 }
 
 async function acquireLock() {
@@ -249,6 +260,40 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
 
     await completeMessage(imap, uid, archiveStrategy);
     console.log(`Processed UID ${uid} from ${from.address}`);
+}
+
+async function processUidsWithConcurrency({ uids, smtp, archiveStrategy, concurrency }) {
+  const normalizedConcurrency = Math.max(1, Math.floor(concurrency || 1));
+  const workers = [];
+  let cursor = 0;
+
+  for (let index = 0; index < Math.min(normalizedConcurrency, uids.length); index += 1) {
+    workers.push((async () => {
+      while (cursor < uids.length) {
+        const currentIndex = cursor;
+        cursor += 1;
+        const uid = uids[currentIndex];
+        await processMessageWithDedicatedImap({ uid, smtp, archiveStrategy });
+      }
+    })());
+  }
+
+  const results = await Promise.allSettled(workers);
+  const rejected = results.find((result) => result.status === 'rejected');
+  if (rejected) {
+    throw rejected.reason;
+  }
+}
+
+async function processMessageWithDedicatedImap({ uid, smtp, archiveStrategy }) {
+  const workerImap = createImapClient();
+  try {
+    await workerImap.connect();
+    await workerImap.mailboxOpen(config.imap.mailbox);
+    await processMessage({ imap: workerImap, smtp, uid, archiveStrategy });
+  } finally {
+    await safeLogout(workerImap);
+  }
 }
 
 async function prepareArchiveMailbox(imap) {

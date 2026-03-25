@@ -45,6 +45,7 @@ cp .env.example .env
 - `IMAP_DONE_MAILBOX_CREATE`：是否在不存在时自动创建归档文件夹，默认 `false`；像阿里云企业邮箱这类限制创建目录的服务建议保持关闭
 - `IMAP_DISABLE_AUTO_IDLE`：是否关闭 IMAP 自动 IDLE，默认 `true`；建议开启以避免 OpenClaw 长调用期间的 IDLE 断连噪音
 - `POLL_MAX_MESSAGES`：每次轮询最多处理的未读邮件数，默认 `1`；推荐保持为 `1` 以确保每次只处理一封邮件，避免 OpenClaw 上下文串扰
+- `OPENCLAW_CONSUMER_CONCURRENCY`：单次轮询中的并行消费者数，默认 `1`；当 OpenClaw 任务可能长时间阻塞时可调大（如 `2~4`）提升吞吐
 - `OPENCLAW_MODE=http|cli`：调用方式
 - `OPENCLAW_HTTP_URL`：HTTP 模式下的 OpenClaw 入口
 - `OPENCLAW_CLI_BIN`：CLI 模式下 OpenClaw 可执行文件路径，默认 `/home/forrestmo/.npm-global/bin/openclaw`
