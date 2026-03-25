@@ -4,7 +4,8 @@ import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import { htmlToText } from 'html-to-text';
 import { spawn } from 'node:child_process';
-import { open, unlink, readFile } from 'node:fs/promises';
+import { open, unlink, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 
 const config = {
   imap: {
@@ -18,6 +19,8 @@ const config = {
     mailbox: process.env.IMAP_MAILBOX || 'INBOX',
     doneMailbox: process.env.IMAP_DONE_MAILBOX || '已完成',
     createDoneMailbox: boolean('IMAP_DONE_MAILBOX_CREATE', false),
+    failedMailbox: process.env.IMAP_FAILED_MAILBOX || '失败',
+    createFailedMailbox: boolean('IMAP_FAILED_MAILBOX_CREATE', false),
     disableAutoIdle: boolean('IMAP_DISABLE_AUTO_IDLE', true),
   },
   smtp: {
@@ -49,6 +52,9 @@ const config = {
   },
   pollMaxMessages: number('POLL_MAX_MESSAGES', 1),
   consumerConcurrency: number('OPENCLAW_CONSUMER_CONCURRENCY', 1),
+  maxRetries: number('OPENCLAW_MAX_RETRIES', 3),
+  retryBackoffSeconds: numberList('OPENCLAW_RETRY_BACKOFF_SECONDS', [60, 300, 1800]),
+  retryStateFile: process.env.OPENCLAW_RETRY_STATE_FILE || '/tmp/openclaw-mail-retries.json',
   mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
   replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
   logOpenClawPrompt: boolean('OPENCLAW_LOG_PROMPT', false),
@@ -66,10 +72,12 @@ async function main() {
   const imap = createImapClient();
 
   const smtp = nodemailer.createTransport(config.smtp);
+  const retryState = await loadRetryState();
 
   try {
     await imap.connect();
     const archiveStrategy = await prepareArchiveMailbox(imap);
+    const failedStrategy = await prepareFailedMailbox(imap);
     await imap.mailboxOpen(config.imap.mailbox);
 
     const unseen = await imap.search({ seen: false }, { uid: true });
@@ -84,6 +92,8 @@ async function main() {
       uids: targetIds,
       smtp,
       archiveStrategy,
+      failedStrategy,
+      retryState,
       concurrency: config.consumerConcurrency,
     });
   } finally {
@@ -190,7 +200,7 @@ async function safeLogout(imap) {
   }
 }
 
-async function processMessage({ imap, smtp, uid, archiveStrategy }) {
+async function processMessage({ imap, smtp, uid, archiveStrategy, failedStrategy, retryState }) {
     const message = await imap.fetchOne(uid, { uid: true, envelope: true, source: true }, { uid: true });
     if (!message?.source) {
       console.warn(`Skipping UID ${uid}: message source is empty.`);
@@ -208,6 +218,20 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
 
     const subject = (parsed.subject || '').trim() || '(no subject)';
     const cleanBody = cleanMailBody(parsed).slice(0, config.openclaw.maxBodyChars);
+    const retryKey = buildRetryKey({
+      mailbox: config.imap.mailbox,
+      uid,
+      messageId: parsed.messageId,
+      from: from.address,
+      subject,
+    });
+    const retryEntry = retryState[retryKey];
+    const notBefore = Number(retryEntry?.nextRetryAt || 0);
+    if (notBefore > Date.now()) {
+      console.warn(`Skipping UID ${uid} before next retry window: ${new Date(notBefore).toISOString()}`);
+      return;
+    }
+
     const route = detectRoute(subject, config.openclaw.routes);
     const prompt = buildPrompt({
       sender: from.address,
@@ -223,20 +247,38 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
       replyBody = await invokeOpenClaw({ prompt, sender: from.address, senderName, sessionId });
     } catch (error) {
       console.error(`OpenClaw failed for UID ${uid}:`, error);
+      const attempts = Number(retryEntry?.attempts || 0) + 1;
+      const maxRetries = Math.max(1, config.maxRetries);
+      if (attempts >= maxRetries) {
+        delete retryState[retryKey];
+        await saveRetryState(retryState);
 
-      if (config.replyOnOpenClawError) {
-        const fallbackReply = normalizeReply(buildFailureReply(subject)).slice(0, config.openclaw.maxReplyChars);
-        await smtp.sendMail({
-          from: config.smtp.auth.user,
-          to: from.address,
-          subject: buildReplySubject(subject),
-          text: fallbackReply,
-          inReplyTo: parsed.messageId,
-          references: parsed.messageId,
-        });
-        console.warn(`Sent fallback failure reply for UID ${uid}; leaving message unread for retry.`);
+        if (config.replyOnOpenClawError) {
+          const fallbackReply = normalizeReply(buildFailureReply(subject)).slice(0, config.openclaw.maxReplyChars);
+          await smtp.sendMail({
+            from: config.smtp.auth.user,
+            to: from.address,
+            subject: buildReplySubject(subject),
+            text: fallbackReply,
+            inReplyTo: parsed.messageId,
+            references: parsed.messageId,
+          });
+          console.warn(`Sent final failure reply for UID ${uid}.`);
+        }
+
+        await completeFailedMessage(imap, uid, failedStrategy);
+        console.warn(`UID ${uid} exceeded max retries (${maxRetries}), marked as failed.`);
+        return;
       }
 
+      const backoff = config.retryBackoffSeconds[Math.min(attempts - 1, config.retryBackoffSeconds.length - 1)];
+      retryState[retryKey] = {
+        attempts,
+        nextRetryAt: Date.now() + (Math.max(1, backoff) * 1000),
+      };
+      await saveRetryState(retryState);
+
+      console.warn(`UID ${uid} retry scheduled, attempt=${attempts}, backoff=${backoff}s`);
       return;
     }
 
@@ -252,10 +294,12 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
     });
 
     await completeMessage(imap, uid, archiveStrategy);
+    delete retryState[retryKey];
+    await saveRetryState(retryState);
     console.log(`Processed UID ${uid} from ${from.address}`);
 }
 
-async function processUidsWithConcurrency({ uids, smtp, archiveStrategy, concurrency }) {
+async function processUidsWithConcurrency({ uids, smtp, archiveStrategy, failedStrategy, retryState, concurrency }) {
   const normalizedConcurrency = Math.max(1, Math.floor(concurrency || 1));
   const workers = [];
   let cursor = 0;
@@ -266,7 +310,7 @@ async function processUidsWithConcurrency({ uids, smtp, archiveStrategy, concurr
         const currentIndex = cursor;
         cursor += 1;
         const uid = uids[currentIndex];
-        await processMessageWithDedicatedImap({ uid, smtp, archiveStrategy });
+        await processMessageWithDedicatedImap({ uid, smtp, archiveStrategy, failedStrategy, retryState });
       }
     })());
   }
@@ -278,12 +322,12 @@ async function processUidsWithConcurrency({ uids, smtp, archiveStrategy, concurr
   }
 }
 
-async function processMessageWithDedicatedImap({ uid, smtp, archiveStrategy }) {
+async function processMessageWithDedicatedImap({ uid, smtp, archiveStrategy, failedStrategy, retryState }) {
   const workerImap = createImapClient();
   try {
     await workerImap.connect();
     await workerImap.mailboxOpen(config.imap.mailbox);
-    await processMessage({ imap: workerImap, smtp, uid, archiveStrategy });
+    await processMessage({ imap: workerImap, smtp, uid, archiveStrategy, failedStrategy, retryState });
   } finally {
     await safeLogout(workerImap);
   }
@@ -318,6 +362,35 @@ async function prepareArchiveMailbox(imap) {
   }
 }
 
+async function prepareFailedMailbox(imap) {
+  const exists = await mailboxExists(imap, config.imap.failedMailbox);
+  if (exists) {
+    return { enabled: true, mailbox: config.imap.failedMailbox };
+  }
+
+  if (!config.imap.createFailedMailbox) {
+    console.warn([
+      `Failed mailbox "${config.imap.failedMailbox}" does not exist.`,
+      'Exceeded retries will fall back to marking messages as read in the source mailbox.',
+      'Set IMAP_FAILED_MAILBOX_CREATE=true to let the worker try creating it automatically.',
+    ].join(' '));
+    return { enabled: false, mailbox: config.imap.failedMailbox };
+  }
+
+  try {
+    await imap.mailboxCreate(config.imap.failedMailbox);
+    console.log(`Created failed mailbox "${config.imap.failedMailbox}".`);
+    return { enabled: true, mailbox: config.imap.failedMailbox };
+  } catch (error) {
+    console.warn([
+      `Unable to create failed mailbox "${config.imap.failedMailbox}".`,
+      formatError(error),
+      'Exceeded retries will only mark messages as read.',
+    ].join(' '));
+    return { enabled: false, mailbox: config.imap.failedMailbox };
+  }
+}
+
 async function completeMessage(imap, uid, archiveStrategy) {
   await runImapActionWithReconnect(imap, () => imap.messageFlagsAdd(uid, ['\\Seen'], { uid: true }));
 
@@ -334,6 +407,47 @@ async function completeMessage(imap, uid, archiveStrategy) {
       'The message was kept in the source mailbox but marked as read.',
     ].join(' '));
   }
+}
+
+async function completeFailedMessage(imap, uid, failedStrategy) {
+  await runImapActionWithReconnect(imap, () => imap.messageFlagsAdd(uid, ['\\Seen'], { uid: true }));
+
+  if (!failedStrategy.enabled) {
+    return;
+  }
+
+  try {
+    await runImapActionWithReconnect(imap, () => imap.messageMove(uid, failedStrategy.mailbox, { uid: true }));
+  } catch (error) {
+    console.warn([
+      `Failed to move UID ${uid} to failed mailbox "${failedStrategy.mailbox}".`,
+      formatError(error),
+      'The message was kept in the source mailbox but marked as read.',
+    ].join(' '));
+  }
+}
+
+function buildRetryKey({ mailbox, uid, messageId, from, subject }) {
+  const raw = [mailbox, uid, messageId || '', from || '', subject || ''].join('|');
+  return createHash('sha256').update(raw).digest('hex');
+}
+
+async function loadRetryState() {
+  try {
+    const content = await readFile(config.retryStateFile, 'utf8');
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {};
+    }
+    console.warn(`Failed to load retry state file ${config.retryStateFile}: ${formatError(error)}`);
+    return {};
+  }
+}
+
+async function saveRetryState(state) {
+  await writeFile(config.retryStateFile, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
 }
 
 async function runImapActionWithReconnect(imap, action) {
@@ -676,6 +790,16 @@ function boolean(name, fallback) {
   const value = process.env[name];
   if (value == null) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+}
+
+function numberList(name, fallback) {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const items = String(value)
+    .split(',')
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isFinite(item) && item > 0);
+  return items.length > 0 ? items : fallback;
 }
 
 main().catch((error) => {

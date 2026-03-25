@@ -43,6 +43,8 @@ cp .env.example .env
 - `SMTP_*`：回信发送信息
 - `IMAP_DONE_MAILBOX`：处理完成后移动到的文件夹，默认 `已完成`
 - `IMAP_DONE_MAILBOX_CREATE`：是否在不存在时自动创建归档文件夹，默认 `false`；像阿里云企业邮箱这类限制创建目录的服务建议保持关闭
+- `IMAP_FAILED_MAILBOX`：超过重试上限后移动到的失败文件夹，默认 `失败`
+- `IMAP_FAILED_MAILBOX_CREATE`：是否在不存在时自动创建失败文件夹，默认 `false`
 - `IMAP_DISABLE_AUTO_IDLE`：是否关闭 IMAP 自动 IDLE，默认 `true`；建议开启以避免 OpenClaw 长调用期间的 IDLE 断连噪音
 - `POLL_MAX_MESSAGES`：每次轮询最多处理的未读邮件数，默认 `1`；推荐保持为 `1` 以确保每次只处理一封邮件，避免 OpenClaw 上下文串扰
 - `OPENCLAW_CONSUMER_CONCURRENCY`：单次轮询中的并行消费者数，默认 `1`；当 OpenClaw 任务可能长时间阻塞时可调大（如 `2~4`）提升吞吐
@@ -51,9 +53,12 @@ cp .env.example .env
 - `OPENCLAW_CLI_BIN`：CLI 模式下 OpenClaw 可执行文件路径，默认 `/home/forrestmo/.npm-global/bin/openclaw`
 - `OPENCLAW_CLI_AGENT`：CLI 模式下使用的 agent 名，默认 `bankriskmail`
 - `OPENCLAW_CLI_TIMEOUT_MS`：CLI 调用超时（毫秒），默认 `180000`（3 分钟）
+- `OPENCLAW_MAX_RETRIES`：OpenClaw 失败最大重试次数，默认 `3`；达到上限后邮件会按失败策略处理，不再无限重试
+- `OPENCLAW_RETRY_BACKOFF_SECONDS`：重试退避秒数列表，默认 `60,300,1800`；超过列表长度时使用最后一个值
+- `OPENCLAW_RETRY_STATE_FILE`：重试状态持久化文件，默认 `/tmp/openclaw-mail-retries.json`
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
-- `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
+- `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 最终失败（达到重试上限）时是否发送失败通知邮件，默认 `false`
 - `LOCK_FILE`：单实例锁文件路径，默认 `/tmp/openclaw-mail.lock`；用于避免 systemd / OpenClaw / 手工启动同时触发多个实例。若检测到锁文件里的 PID 已不存在，脚本会自动清理陈旧锁
 - `OPENCLAW_LOG_PROMPT`：是否把发送给 OpenClaw 的完整 prompt 打印到 stdout，默认 `false`
 - `OPENCLAW_LOG_RESPONSE`：是否把 OpenClaw 返回内容打印到 stdout，默认 `false`
@@ -159,10 +164,12 @@ journalctl -u openclaw-mail.service -f
 ### 2. 稳定性策略
 
 - 默认每次轮询只处理 1 封未读邮件，避免同一轮中多封邮件共享 OpenClaw 运行上下文；如需提高吞吐，可手动调大 `POLL_MAX_MESSAGES`
-- OpenClaw 调用失败时，默认不回信、不归档、不标记已读，保留原邮件用于重试
-- 如需失败时也回一封提示邮件，可设置 `OPENCLAW_REPLY_ON_ERROR=true`，但邮件仍会保留未读
+- OpenClaw 调用失败会按 `OPENCLAW_RETRY_BACKOFF_SECONDS` 进行退避重试，并把尝试次数写入 `OPENCLAW_RETRY_STATE_FILE`
+- 达到 `OPENCLAW_MAX_RETRIES` 后，邮件会停止重试并标记已读；若失败文件夹可用则移动到 `IMAP_FAILED_MAILBOX`
+- 如需最终失败时给发件人发送提示邮件，可设置 `OPENCLAW_REPLY_ON_ERROR=true`
 - 只有成功拿到 OpenClaw 结果且 SMTP 回信成功后，才会把邮件标记已读并移动到 `已完成`
 - 默认不会主动创建 `已完成` 文件夹；若邮箱服务商支持并且你希望自动创建，可将 `IMAP_DONE_MAILBOX_CREATE=true`
+- 默认不会主动创建 `失败` 文件夹；若你希望自动创建，可将 `IMAP_FAILED_MAILBOX_CREATE=true`
 - 若归档目录不存在或移动失败，脚本会回退为“仅标记已读”，避免整次任务失败
 - 如果 OpenClaw 错误地把多封邮件的回复合并在一次输出里，脚本会按“回复xxx / 邮件回复 / 致某某”分段，并优先提取当前发件人对应的那一段再回邮
 
