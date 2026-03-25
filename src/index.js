@@ -4,9 +4,7 @@ import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import { htmlToText } from 'html-to-text';
 import { spawn } from 'node:child_process';
-import { open, unlink, readdir, rm, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import path from 'node:path';
+import { open, unlink, readFile } from 'node:fs/promises';
 
 const config = {
   imap: {
@@ -56,8 +54,6 @@ const config = {
   logOpenClawPrompt: boolean('OPENCLAW_LOG_PROMPT', false),
   logOpenClawResponse: boolean('OPENCLAW_LOG_RESPONSE', false),
   lockFile: process.env.LOCK_FILE || '/tmp/openclaw-mail.lock',
-  openclawSessionsDir: process.env.OPENCLAW_SESSIONS_DIR || path.join(homedir(), '.openclaw', 'agents', 'bankriskmail', 'sessions'),
-  openclawCleanSessions: boolean('OPENCLAW_CLEAN_SESSIONS', true),
 };
 
 async function main() {
@@ -220,9 +216,6 @@ async function processMessage({ imap, smtp, uid, archiveStrategy }) {
       body: cleanBody,
       route,
     });
-    if (config.openclawCleanSessions) {
-      await cleanupOpenClawSessions();
-    }
     const sessionId = buildOpenClawSessionId();
 
     let replyBody;
@@ -386,26 +379,6 @@ async function mailboxExists(imap, mailboxName) {
   return mailboxes.some((mailbox) => mailbox.path === mailboxName);
 }
 
-async function cleanupOpenClawSessions() {
-  const sessionDir = config.openclawSessionsDir;
-
-  try {
-    const names = await readdir(sessionDir);
-    for (const name of names) {
-      await rm(path.join(sessionDir, name), { recursive: true, force: true });
-    }
-
-    if (names.length > 0) {
-      console.log(`Cleared ${names.length} OpenClaw session item(s) from ${sessionDir}`);
-    }
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return;
-    }
-    console.warn(`Failed to clean OpenClaw sessions: ${formatError(error)}`);
-  }
-}
-
 function cleanMailBody(parsed) {
   const sourceText = parsed.text?.trim()
     || htmlToText(parsed.html || '', {
@@ -535,9 +508,9 @@ async function invokeOpenClawHttp(prompt) {
 
 async function invokeOpenClawCli(prompt, sessionId) {
   const command = config.openclaw.cliBin;
-  const args = ['agent', '--local', '--agent', config.openclaw.cliAgent, '--session-id', sessionId, '--message', prompt];
+  const args = ['agent', '--agent', config.openclaw.cliAgent, '--session-id', sessionId, '--message', prompt];
 
-  console.log(`[OpenClaw][CLI] ${command} agent --local --agent ${config.openclaw.cliAgent} --session-id ${sessionId} --message <PROMPT>`);
+  console.log(`[OpenClaw][CLI] ${command} agent --agent ${config.openclaw.cliAgent} --session-id ${sessionId} --message <PROMPT>`);
 
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, {

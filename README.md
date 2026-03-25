@@ -55,8 +55,6 @@ cp .env.example .env
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 失败时是否发送失败通知邮件，默认 `false`；默认行为是保留未读邮件以便后续重试
 - `LOCK_FILE`：单实例锁文件路径，默认 `/tmp/openclaw-mail.lock`；用于避免 systemd / OpenClaw / 手工启动同时触发多个实例。若检测到锁文件里的 PID 已不存在，脚本会自动清理陈旧锁
-- `OPENCLAW_SESSIONS_DIR`：会话历史清理目录，默认 `/home/forrestmo/.openclaw/agents/bankriskmail/sessions`
-- `OPENCLAW_CLEAN_SESSIONS`：是否在每封邮件处理前清理会话历史，默认 `true`；调试时可设为 `false`
 - `OPENCLAW_LOG_PROMPT`：是否把发送给 OpenClaw 的完整 prompt 打印到 stdout，默认 `false`
 - `OPENCLAW_LOG_RESPONSE`：是否把 OpenClaw 返回内容打印到 stdout，默认 `false`
 
@@ -168,7 +166,6 @@ journalctl -u openclaw-mail.service -f
 - 若归档目录不存在或移动失败，脚本会回退为“仅标记已读”，避免整次任务失败
 - CLI 模式下如果 OpenClaw 把插件注册日志或过程性提示混到 stdout，脚本会先剥离 `[plugins] ...` 等噪音行，再把净化后的正文用于回邮
 - 如果 OpenClaw 错误地把多封邮件的回复合并在一次输出里，脚本会按“回复xxx / 邮件回复 / 致某某”分段，并优先提取当前发件人对应的那一段再回邮
-- 默认每封邮件开始处理前，脚本会先清理 `OPENCLAW_SESSIONS_DIR` 目录下的会话历史文件，确保本次运行使用干净上下文；处理完成后会保留本次历史，便于排查。调试时可将 `OPENCLAW_CLEAN_SESSIONS=false` 暂时关闭该行为
 
 ### 3. HTTP / CLI 双模式
 
@@ -191,7 +188,7 @@ journalctl -u openclaw-mail.service -f
 当 `OPENCLAW_MODE=cli` 时，脚本会固定调用：
 
 ```bash
-/home/forrestmo/.npm-global/bin/openclaw agent --local --agent bankriskmail --session-id "mail-<唯一ID>" --message "任务来源：邮件 ..."
+/home/forrestmo/.npm-global/bin/openclaw agent --agent bankriskmail --session-id "mail-<唯一ID>" --message "任务来源：邮件 ..."
 ```
 
 如果你想切换 agent，可通过 `OPENCLAW_CLI_AGENT` 配置，例如：
@@ -204,10 +201,10 @@ OPENCLAW_CLI_AGENT=bankriskmail
 最终执行命令格式始终为：
 
 ```bash
-/home/forrestmo/.npm-global/bin/openclaw agent --local --agent <agent> --session-id "mail-<唯一ID>" --message "任务来源：邮件 ..."
+/home/forrestmo/.npm-global/bin/openclaw agent --agent <agent> --session-id "mail-<唯一ID>" --message "任务来源：邮件 ..."
 ```
 
-实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。CLI 模式使用 `--local` 启动单次本地会话，并为每封邮件生成一次性的唯一 `session-id`（形如 `mail-时间戳-高精度计数`），避免不同邮件之间复用同一个 OpenClaw 上下文；默认调用路径为 `/home/forrestmo/.npm-global/bin/openclaw`，也可通过 `OPENCLAW_CLI_BIN` 覆盖。为避免长时间卡住，脚本会在 `OPENCLAW_CLI_TIMEOUT_MS` 到达后终止 CLI 并报错。
+实现上使用 Node.js 的 `spawn()` 直接传参数数组，而不是拼接 shell 命令字符串，这样更适合邮件正文这类多行、含中文、含引号的内容。CLI 模式会为每封邮件生成一次性的唯一 `session-id`（形如 `mail-时间戳-高精度计数`），避免不同邮件之间复用同一个 OpenClaw 上下文；默认调用路径为 `/home/forrestmo/.npm-global/bin/openclaw`，也可通过 `OPENCLAW_CLI_BIN` 覆盖。为避免长时间卡住，脚本会在 `OPENCLAW_CLI_TIMEOUT_MS` 到达后终止 CLI 并报错。
 
 ## 推荐部署建议
 
