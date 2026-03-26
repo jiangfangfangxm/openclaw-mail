@@ -5,6 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+User=forrestmo
+Group=forrestmo
 WorkingDirectory=/opt/openclaw-mail
 EnvironmentFile=/opt/openclaw-mail/.env
+Environment=HOME=/home/forrestmo
 ExecStart=/usr/bin/env node src/index.js

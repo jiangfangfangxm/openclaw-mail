@@ -138,6 +138,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now openclaw-mail.timer
 ```
 
+> 首次部署前请按机器实际用户修改 `systemd/openclaw-mail.service` 里的 `User` / `Group` / `HOME`（例如 `forrestmo`）。如果不设置，systemd 默认可能以 root 运行，导致找不到当前用户下配置的 OpenClaw agent。
+
 查看状态：
 
 > 如果你改成由 OpenClaw 定时启动，也**不要和 systemd timer 同时开启**。当前程序已经内置单实例锁，重复启动时后来的实例会直接退出，但最佳实践仍然是只保留一个调度器。
