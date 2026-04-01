@@ -56,6 +56,7 @@ cp .env.example .env
 - `OPENCLAW_MAX_RETRIES`：OpenClaw 失败最大重试次数，默认 `3`；超过上限后邮件会按失败策略处理，不再无限重试
 - `OPENCLAW_RETRY_BACKOFF_SECONDS`：重试退避秒数列表，默认 `60,300,1800`；超过列表长度时使用最后一个值
 - `OPENCLAW_RETRY_STATE_FILE`：重试状态持久化文件，默认 `/tmp/openclaw-mail-retries.json`
+- `OPENCLAW_MAIL_SOURCES_FILE`：多邮箱配置 JSON 文件路径；为空时走单邮箱模式（`IMAP_MAILBOX` + `OPENCLAW_CLI_AGENT`）
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 最终失败（达到重试上限）时是否发送失败通知邮件，默认 `false`
@@ -77,6 +78,8 @@ cp .env.example .env
 
 除回答问题外，还要识别并执行邮件中明确提出的操作要求（如转发结果、抄送指定邮箱、补充指定格式）。
 如果识别到操作要求，请在回复正文中明确写出“已执行的操作”和“未执行原因（如信息不足或权限限制）”。
+如果你需要返回附件，请输出 JSON：{"reply_text":"...","attachments":[{"filename":"...","content_type":"...","content_base64":"..."}]}。
+如果不需要附件，请只输出邮件正文文本。
 请直接输出可用于邮件回复的最终正文。
 不要输出思考过程、JSON、Markdown 代码块、日志。
 如果任务信息不足，请直接列出最少的补充信息。
@@ -84,6 +87,31 @@ cp .env.example .env
 ```
 
 这比直接转发完整 RFC822 原文更省 token，也更稳定。
+
+### 多邮箱 + 多 agent 配置示例
+
+当你需要一个 worker 轮询多个邮箱，并且每个邮箱绑定不同 OpenClaw agent，可设置 `OPENCLAW_MAIL_SOURCES_FILE` 指向 JSON 文件：
+
+```json
+[
+  {
+    "name": "risk_mail",
+    "imapMailbox": "INBOX",
+    "doneMailbox": "已完成",
+    "failedMailbox": "失败",
+    "openclawAgent": "bankriskmail",
+    "enabled": true
+  },
+  {
+    "name": "ops_mail",
+    "imapMailbox": "OPS",
+    "doneMailbox": "OPS_已完成",
+    "failedMailbox": "OPS_失败",
+    "openclawAgent": "opsagent",
+    "enabled": true
+  }
+]
+```
 
 ## 运行方式
 

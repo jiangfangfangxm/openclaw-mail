@@ -55,6 +55,7 @@ const config = {
   maxRetries: number('OPENCLAW_MAX_RETRIES', 3),
   retryBackoffSeconds: numberList('OPENCLAW_RETRY_BACKOFF_SECONDS', [60, 300, 1800]),
   retryStateFile: process.env.OPENCLAW_RETRY_STATE_FILE || '/tmp/openclaw-mail-retries.json',
+  mailSourcesFile: process.env.OPENCLAW_MAIL_SOURCES_FILE || '',
   mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
   replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
   logOpenClawPrompt: boolean('OPENCLAW_LOG_PROMPT', false),
@@ -73,32 +74,76 @@ async function main() {
 
   const smtp = nodemailer.createTransport(config.smtp);
   const retryState = await loadRetryState();
+  const sources = await loadMailSources();
 
   try {
     await imap.connect();
-    const archiveStrategy = await prepareArchiveMailbox(imap);
-    const failedStrategy = await prepareFailedMailbox(imap);
-    await imap.mailboxOpen(config.imap.mailbox);
+    for (const source of sources) {
+      const archiveStrategy = await prepareArchiveMailbox(imap, source);
+      const failedStrategy = await prepareFailedMailbox(imap, source);
+      await imap.mailboxOpen(source.mailbox);
 
-    const unseen = await imap.search({ seen: false }, { uid: true });
-    const targetIds = unseen.slice(0, config.pollMaxMessages);
+      const unseen = await imap.search({ seen: false }, { uid: true });
+      const targetIds = unseen.slice(0, config.pollMaxMessages);
 
-    if (targetIds.length === 0) {
-      console.log('No unread messages.');
-      return;
+      if (targetIds.length === 0) {
+        console.log(`[${source.name}] No unread messages.`);
+        continue;
+      }
+
+      await processUidsWithConcurrency({
+        source,
+        uids: targetIds,
+        smtp,
+        archiveStrategy,
+        failedStrategy,
+        retryState,
+        concurrency: config.consumerConcurrency,
+      });
     }
-
-    await processUidsWithConcurrency({
-      uids: targetIds,
-      smtp,
-      archiveStrategy,
-      failedStrategy,
-      retryState,
-      concurrency: config.consumerConcurrency,
-    });
   } finally {
     await safeLogout(imap);
     await releaseLock(lock);
+  }
+}
+
+async function loadMailSources() {
+  const fallback = [{
+    name: 'default',
+    mailbox: config.imap.mailbox,
+    doneMailbox: config.imap.doneMailbox,
+    createDoneMailbox: config.imap.createDoneMailbox,
+    failedMailbox: config.imap.failedMailbox,
+    createFailedMailbox: config.imap.createFailedMailbox,
+    openclawAgent: config.openclaw.cliAgent,
+  }];
+
+  if (!config.mailSourcesFile) {
+    return fallback;
+  }
+
+  try {
+    const content = await readFile(config.mailSourcesFile, 'utf8');
+    const parsed = JSON.parse(content);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      console.warn(`OPENCLAW_MAIL_SOURCES_FILE is empty/invalid, fallback to default source.`);
+      return fallback;
+    }
+
+    return parsed
+      .filter((item) => item && item.enabled !== false)
+      .map((item, index) => ({
+        name: String(item.name || `source-${index + 1}`),
+        mailbox: String(item.imapMailbox || item.mailbox || config.imap.mailbox),
+        doneMailbox: String(item.doneMailbox || config.imap.doneMailbox),
+        createDoneMailbox: item.createDoneMailbox == null ? config.imap.createDoneMailbox : Boolean(item.createDoneMailbox),
+        failedMailbox: String(item.failedMailbox || config.imap.failedMailbox),
+        createFailedMailbox: item.createFailedMailbox == null ? config.imap.createFailedMailbox : Boolean(item.createFailedMailbox),
+        openclawAgent: String(item.openclawAgent || config.openclaw.cliAgent),
+      }));
+  } catch (error) {
+    console.warn(`Failed to load OPENCLAW_MAIL_SOURCES_FILE=${config.mailSourcesFile}: ${formatError(error)}. Fallback to default source.`);
+    return fallback;
   }
 }
 
@@ -200,7 +245,7 @@ async function safeLogout(imap) {
   }
 }
 
-async function processMessage({ imap, smtp, uid, archiveStrategy, failedStrategy, retryState }) {
+async function processMessage({ imap, smtp, uid, source, archiveStrategy, failedStrategy, retryState }) {
     const message = await imap.fetchOne(uid, { uid: true, envelope: true, source: true }, { uid: true });
     if (!message?.source) {
       console.warn(`Skipping UID ${uid}: message source is empty.`);
@@ -219,7 +264,8 @@ async function processMessage({ imap, smtp, uid, archiveStrategy, failedStrategy
     const subject = (parsed.subject || '').trim() || '(no subject)';
     const cleanBody = cleanMailBody(parsed).slice(0, config.openclaw.maxBodyChars);
     const retryKey = buildRetryKey({
-      mailbox: config.imap.mailbox,
+      sourceName: source.name,
+      mailbox: source.mailbox,
       uid,
       messageId: parsed.messageId,
       from: from.address,
@@ -242,9 +288,15 @@ async function processMessage({ imap, smtp, uid, archiveStrategy, failedStrategy
     });
     const sessionId = buildOpenClawSessionId();
 
-    let replyBody;
+    let openclawReply;
     try {
-      replyBody = await invokeOpenClaw({ prompt, sender: from.address, senderName, sessionId });
+      openclawReply = await invokeOpenClaw({
+        prompt,
+        sender: from.address,
+        senderName,
+        sessionId,
+        agent: source.openclawAgent,
+      });
     } catch (error) {
       console.error(`OpenClaw failed for UID ${uid}:`, error);
       const attempts = Number(retryEntry?.attempts || 0) + 1;
@@ -282,13 +334,14 @@ async function processMessage({ imap, smtp, uid, archiveStrategy, failedStrategy
       return;
     }
 
-    const finalReply = normalizeReply(replyBody).slice(0, config.openclaw.maxReplyChars);
+    const finalReply = normalizeReply(openclawReply.replyBody).slice(0, config.openclaw.maxReplyChars);
 
     await smtp.sendMail({
       from: config.smtp.auth.user,
       to: from.address,
       subject: buildReplySubject(subject),
       text: finalReply,
+      attachments: openclawReply.attachments,
       inReplyTo: parsed.messageId,
       references: parsed.messageId,
     });
@@ -299,7 +352,7 @@ async function processMessage({ imap, smtp, uid, archiveStrategy, failedStrategy
     console.log(`Processed UID ${uid} from ${from.address}`);
 }
 
-async function processUidsWithConcurrency({ uids, smtp, archiveStrategy, failedStrategy, retryState, concurrency }) {
+async function processUidsWithConcurrency({ source, uids, smtp, archiveStrategy, failedStrategy, retryState, concurrency }) {
   const normalizedConcurrency = Math.max(1, Math.floor(concurrency || 1));
   const workers = [];
   let cursor = 0;
@@ -310,7 +363,7 @@ async function processUidsWithConcurrency({ uids, smtp, archiveStrategy, failedS
         const currentIndex = cursor;
         cursor += 1;
         const uid = uids[currentIndex];
-        await processMessageWithDedicatedImap({ uid, smtp, archiveStrategy, failedStrategy, retryState });
+        await processMessageWithDedicatedImap({ source, uid, smtp, archiveStrategy, failedStrategy, retryState });
       }
     })());
   }
@@ -322,72 +375,72 @@ async function processUidsWithConcurrency({ uids, smtp, archiveStrategy, failedS
   }
 }
 
-async function processMessageWithDedicatedImap({ uid, smtp, archiveStrategy, failedStrategy, retryState }) {
+async function processMessageWithDedicatedImap({ source, uid, smtp, archiveStrategy, failedStrategy, retryState }) {
   const workerImap = createImapClient();
   try {
     await workerImap.connect();
-    await workerImap.mailboxOpen(config.imap.mailbox);
-    await processMessage({ imap: workerImap, smtp, uid, archiveStrategy, failedStrategy, retryState });
+    await workerImap.mailboxOpen(source.mailbox);
+    await processMessage({ imap: workerImap, smtp, uid, source, archiveStrategy, failedStrategy, retryState });
   } finally {
     await safeLogout(workerImap);
   }
 }
 
-async function prepareArchiveMailbox(imap) {
-  const exists = await mailboxExists(imap, config.imap.doneMailbox);
+async function prepareArchiveMailbox(imap, source) {
+  const exists = await mailboxExists(imap, source.doneMailbox);
   if (exists) {
-    return { enabled: true, mailbox: config.imap.doneMailbox };
+    return { enabled: true, mailbox: source.doneMailbox };
   }
 
-  if (!config.imap.createDoneMailbox) {
+  if (!source.createDoneMailbox) {
     console.warn([
-      `Archive mailbox "${config.imap.doneMailbox}" does not exist.`,
+      `Archive mailbox "${source.doneMailbox}" does not exist.`,
       'Skipping move step and leaving processed messages as read in the source mailbox.',
       'Set IMAP_DONE_MAILBOX_CREATE=true to let the worker try creating it automatically.',
     ].join(' '));
-    return { enabled: false, mailbox: config.imap.doneMailbox };
+    return { enabled: false, mailbox: source.doneMailbox };
   }
 
   try {
-    await imap.mailboxCreate(config.imap.doneMailbox);
-    console.log(`Created archive mailbox "${config.imap.doneMailbox}".`);
-    return { enabled: true, mailbox: config.imap.doneMailbox };
+    await imap.mailboxCreate(source.doneMailbox);
+    console.log(`Created archive mailbox "${source.doneMailbox}".`);
+    return { enabled: true, mailbox: source.doneMailbox };
   } catch (error) {
     console.warn([
-      `Unable to create archive mailbox "${config.imap.doneMailbox}".`,
+      `Unable to create archive mailbox "${source.doneMailbox}".`,
       formatError(error),
       'Processed messages will only be marked as read.',
     ].join(' '));
-    return { enabled: false, mailbox: config.imap.doneMailbox };
+    return { enabled: false, mailbox: source.doneMailbox };
   }
 }
 
-async function prepareFailedMailbox(imap) {
-  const exists = await mailboxExists(imap, config.imap.failedMailbox);
+async function prepareFailedMailbox(imap, source) {
+  const exists = await mailboxExists(imap, source.failedMailbox);
   if (exists) {
-    return { enabled: true, mailbox: config.imap.failedMailbox };
+    return { enabled: true, mailbox: source.failedMailbox };
   }
 
-  if (!config.imap.createFailedMailbox) {
+  if (!source.createFailedMailbox) {
     console.warn([
-      `Failed mailbox "${config.imap.failedMailbox}" does not exist.`,
+      `Failed mailbox "${source.failedMailbox}" does not exist.`,
       'Exceeded retries will fall back to marking messages as read in the source mailbox.',
       'Set IMAP_FAILED_MAILBOX_CREATE=true to let the worker try creating it automatically.',
     ].join(' '));
-    return { enabled: false, mailbox: config.imap.failedMailbox };
+    return { enabled: false, mailbox: source.failedMailbox };
   }
 
   try {
-    await imap.mailboxCreate(config.imap.failedMailbox);
-    console.log(`Created failed mailbox "${config.imap.failedMailbox}".`);
-    return { enabled: true, mailbox: config.imap.failedMailbox };
+    await imap.mailboxCreate(source.failedMailbox);
+    console.log(`Created failed mailbox "${source.failedMailbox}".`);
+    return { enabled: true, mailbox: source.failedMailbox };
   } catch (error) {
     console.warn([
-      `Unable to create failed mailbox "${config.imap.failedMailbox}".`,
+      `Unable to create failed mailbox "${source.failedMailbox}".`,
       formatError(error),
       'Exceeded retries will only mark messages as read.',
     ].join(' '));
-    return { enabled: false, mailbox: config.imap.failedMailbox };
+    return { enabled: false, mailbox: source.failedMailbox };
   }
 }
 
@@ -427,8 +480,8 @@ async function completeFailedMessage(imap, uid, failedStrategy) {
   }
 }
 
-function buildRetryKey({ mailbox, uid, messageId, from, subject }) {
-  const raw = [mailbox, uid, messageId || '', from || '', subject || ''].join('|');
+function buildRetryKey({ sourceName, mailbox, uid, messageId, from, subject }) {
+  const raw = [sourceName, mailbox, uid, messageId || '', from || '', subject || ''].join('|');
   return createHash('sha256').update(raw).digest('hex');
 }
 
@@ -554,6 +607,8 @@ function buildPrompt({ sender, senderName, subject, body, route }) {
     '',
     '除回答问题外，还要识别并执行邮件中明确提出的操作要求（如转发结果、抄送指定邮箱、补充指定格式）。',
     '如果识别到操作要求，请在回复正文中明确写出“已执行的操作”和“未执行原因（如信息不足或权限限制）”。',
+    '如果你需要返回附件，请输出 JSON：{"reply_text":"...","attachments":[{"filename":"...","content_type":"...","content_base64":"..."}]}。',
+    '如果不需要附件，请只输出邮件正文文本。',
     '请直接输出可用于邮件回复的最终正文。',
     '不要输出思考过程、JSON、Markdown 代码块、日志。',
     '如果任务信息不足，请直接列出最少的补充信息。',
@@ -561,7 +616,7 @@ function buildPrompt({ sender, senderName, subject, body, route }) {
   ].join('\n');
 }
 
-async function invokeOpenClaw({ prompt, sender, senderName, sessionId }) {
+async function invokeOpenClaw({ prompt, sender, senderName, sessionId, agent }) {
   if (config.logOpenClawPrompt) {
     logBlock('OpenClaw prompt', prompt);
     if (sessionId) console.log(`[OpenClaw] session-id=${sessionId}`);
@@ -569,7 +624,7 @@ async function invokeOpenClaw({ prompt, sender, senderName, sessionId }) {
 
   let result;
   if (config.openclaw.mode === 'cli') {
-    result = await invokeOpenClawCli(prompt, sessionId);
+    result = await invokeOpenClawCli(prompt, sessionId, agent);
   } else {
     result = await invokeOpenClawHttp(prompt);
   }
@@ -578,13 +633,17 @@ async function invokeOpenClaw({ prompt, sender, senderName, sessionId }) {
     logBlock('OpenClaw response (raw)', String(result));
   }
 
-  const isolatedResult = isolateReplyForCurrentMail(result, { sender, senderName });
+  const parsedResult = parseOpenClawResult(result);
+  const isolatedResult = isolateReplyForCurrentMail(parsedResult.replyBody, { sender, senderName });
 
   if (config.logOpenClawResponse && isolatedResult !== String(result).trim()) {
     logBlock('OpenClaw response (isolated)', isolatedResult);
   }
 
-  return isolatedResult;
+  return {
+    replyBody: isolatedResult,
+    attachments: parsedResult.attachments,
+  };
 }
 
 async function invokeOpenClawHttp(prompt) {
@@ -615,11 +674,12 @@ async function invokeOpenClawHttp(prompt) {
   return data.output || data.result || data.reply || JSON.stringify(data);
 }
 
-async function invokeOpenClawCli(prompt, sessionId) {
+async function invokeOpenClawCli(prompt, sessionId, agent) {
   const command = config.openclaw.cliBin;
-  const args = ['agent', '--agent', config.openclaw.cliAgent, '--session-id', sessionId, '--message', prompt];
+  const selectedAgent = agent || config.openclaw.cliAgent;
+  const args = ['agent', '--agent', selectedAgent, '--session-id', sessionId, '--message', prompt];
 
-  console.log(`[OpenClaw][CLI] ${command} agent --agent ${config.openclaw.cliAgent} --session-id ${sessionId} --message <PROMPT>`);
+  console.log(`[OpenClaw][CLI] ${command} agent --agent ${selectedAgent} --session-id ${sessionId} --message <PROMPT>`);
 
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, {
@@ -664,6 +724,58 @@ async function invokeOpenClawCli(prompt, sessionId) {
       resolve(stdout);
     });
   });
+}
+
+function parseOpenClawResult(rawResult) {
+  const text = String(rawResult || '').trim();
+  const parsed = tryParseJsonFromText(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { replyBody: text, attachments: [] };
+  }
+
+  const replyBody = String(parsed.reply_text || parsed.reply || parsed.text || '').trim() || text;
+  const attachments = normalizeMailAttachments(parsed.attachments);
+  return { replyBody, attachments };
+}
+
+function tryParseJsonFromText(text) {
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    const match = text.match(/```json\s*([\s\S]*?)\s*```/i);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[1]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function normalizeMailAttachments(attachments) {
+  if (!Array.isArray(attachments)) return [];
+
+  const normalized = [];
+  for (const item of attachments) {
+    if (!item || typeof item !== 'object') continue;
+    const filename = String(item.filename || '').trim();
+    const contentBase64 = String(item.content_base64 || '').trim();
+    if (!filename || !contentBase64) continue;
+
+    try {
+      normalized.push({
+        filename,
+        contentType: String(item.content_type || 'application/octet-stream'),
+        content: Buffer.from(contentBase64, 'base64'),
+      });
+    } catch (error) {
+      console.warn(`Skip invalid attachment payload: ${formatError(error)}`);
+    }
+  }
+
+  return normalized;
 }
 
 function buildOpenClawSessionId() {
