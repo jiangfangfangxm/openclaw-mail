@@ -70,39 +70,41 @@ async function main() {
     return;
   }
 
-  const imap = createImapClient();
-
-  const smtp = nodemailer.createTransport(config.smtp);
   const retryState = await loadRetryState();
   const sources = await loadMailSources();
 
   try {
-    await imap.connect();
     for (const source of sources) {
-      const archiveStrategy = await prepareArchiveMailbox(imap, source);
-      const failedStrategy = await prepareFailedMailbox(imap, source);
-      await imap.mailboxOpen(source.mailbox);
+      const imap = createImapClient(source.imap);
+      const smtp = nodemailer.createTransport(source.smtp);
+      try {
+        await imap.connect();
+        const archiveStrategy = await prepareArchiveMailbox(imap, source);
+        const failedStrategy = await prepareFailedMailbox(imap, source);
+        await imap.mailboxOpen(source.mailbox);
 
-      const unseen = await imap.search({ seen: false }, { uid: true });
-      const targetIds = unseen.slice(0, config.pollMaxMessages);
+        const unseen = await imap.search({ seen: false }, { uid: true });
+        const targetIds = unseen.slice(0, config.pollMaxMessages);
 
-      if (targetIds.length === 0) {
-        console.log(`[${source.name}] No unread messages.`);
-        continue;
+        if (targetIds.length === 0) {
+          console.log(`[${source.name}] No unread messages.`);
+          continue;
+        }
+
+        await processUidsWithConcurrency({
+          source,
+          uids: targetIds,
+          smtp,
+          archiveStrategy,
+          failedStrategy,
+          retryState,
+          concurrency: config.consumerConcurrency,
+        });
+      } finally {
+        await safeLogout(imap);
       }
-
-      await processUidsWithConcurrency({
-        source,
-        uids: targetIds,
-        smtp,
-        archiveStrategy,
-        failedStrategy,
-        retryState,
-        concurrency: config.consumerConcurrency,
-      });
     }
   } finally {
-    await safeLogout(imap);
     await releaseLock(lock);
   }
 }
@@ -110,6 +112,19 @@ async function main() {
 async function loadMailSources() {
   const fallback = [{
     name: 'default',
+    imap: {
+      host: config.imap.host,
+      port: config.imap.port,
+      secure: config.imap.secure,
+      auth: config.imap.auth,
+      disableAutoIdle: config.imap.disableAutoIdle,
+    },
+    smtp: {
+      host: config.smtp.host,
+      port: config.smtp.port,
+      secure: config.smtp.secure,
+      auth: config.smtp.auth,
+    },
     mailbox: config.imap.mailbox,
     doneMailbox: config.imap.doneMailbox,
     createDoneMailbox: config.imap.createDoneMailbox,
@@ -134,6 +149,25 @@ async function loadMailSources() {
       .filter((item) => item && item.enabled !== false)
       .map((item, index) => ({
         name: String(item.name || `source-${index + 1}`),
+        imap: {
+          host: String(item.imap?.host || config.imap.host),
+          port: Number(item.imap?.port || config.imap.port),
+          secure: item.imap?.secure == null ? config.imap.secure : Boolean(item.imap.secure),
+          auth: {
+            user: String(item.imap?.user || config.imap.auth.user),
+            pass: String(item.imap?.pass || config.imap.auth.pass),
+          },
+          disableAutoIdle: item.imap?.disableAutoIdle == null ? config.imap.disableAutoIdle : Boolean(item.imap.disableAutoIdle),
+        },
+        smtp: {
+          host: String(item.smtp?.host || config.smtp.host),
+          port: Number(item.smtp?.port || config.smtp.port),
+          secure: item.smtp?.secure == null ? config.smtp.secure : Boolean(item.smtp.secure),
+          auth: {
+            user: String(item.smtp?.user || config.smtp.auth.user),
+            pass: String(item.smtp?.pass || config.smtp.auth.pass),
+          },
+        },
         mailbox: String(item.imapMailbox || item.mailbox || config.imap.mailbox),
         doneMailbox: String(item.doneMailbox || config.imap.doneMailbox),
         createDoneMailbox: item.createDoneMailbox == null ? config.imap.createDoneMailbox : Boolean(item.createDoneMailbox),
@@ -147,13 +181,13 @@ async function loadMailSources() {
   }
 }
 
-function createImapClient() {
+function createImapClient(imapConfig) {
   const imap = new ImapFlow({
-    host: config.imap.host,
-    port: config.imap.port,
-    secure: config.imap.secure,
-    auth: config.imap.auth,
-    disableAutoIdle: config.imap.disableAutoIdle,
+    host: imapConfig.host,
+    port: imapConfig.port,
+    secure: imapConfig.secure,
+    auth: imapConfig.auth,
+    disableAutoIdle: imapConfig.disableAutoIdle,
   });
 
   imap.on('error', (error) => {
@@ -265,6 +299,7 @@ async function processMessage({ imap, smtp, uid, source, archiveStrategy, failed
     const cleanBody = cleanMailBody(parsed).slice(0, config.openclaw.maxBodyChars);
     const retryKey = buildRetryKey({
       sourceName: source.name,
+      imapUser: source.imap.auth.user,
       mailbox: source.mailbox,
       uid,
       messageId: parsed.messageId,
@@ -308,7 +343,7 @@ async function processMessage({ imap, smtp, uid, source, archiveStrategy, failed
         if (config.replyOnOpenClawError) {
           const fallbackReply = normalizeReply(buildFailureReply(subject)).slice(0, config.openclaw.maxReplyChars);
           await smtp.sendMail({
-            from: config.smtp.auth.user,
+            from: source.smtp.auth.user,
             to: from.address,
             subject: buildReplySubject(subject),
             text: fallbackReply,
@@ -337,7 +372,7 @@ async function processMessage({ imap, smtp, uid, source, archiveStrategy, failed
     const finalReply = normalizeReply(openclawReply.replyBody).slice(0, config.openclaw.maxReplyChars);
 
     await smtp.sendMail({
-      from: config.smtp.auth.user,
+      from: source.smtp.auth.user,
       to: from.address,
       subject: buildReplySubject(subject),
       text: finalReply,
@@ -376,7 +411,7 @@ async function processUidsWithConcurrency({ source, uids, smtp, archiveStrategy,
 }
 
 async function processMessageWithDedicatedImap({ source, uid, smtp, archiveStrategy, failedStrategy, retryState }) {
-  const workerImap = createImapClient();
+  const workerImap = createImapClient(source.imap);
   try {
     await workerImap.connect();
     await workerImap.mailboxOpen(source.mailbox);
@@ -480,8 +515,8 @@ async function completeFailedMessage(imap, uid, failedStrategy) {
   }
 }
 
-function buildRetryKey({ sourceName, mailbox, uid, messageId, from, subject }) {
-  const raw = [sourceName, mailbox, uid, messageId || '', from || '', subject || ''].join('|');
+function buildRetryKey({ sourceName, imapUser, mailbox, uid, messageId, from, subject }) {
+  const raw = [sourceName, imapUser, mailbox, uid, messageId || '', from || '', subject || ''].join('|');
   return createHash('sha256').update(raw).digest('hex');
 }
 

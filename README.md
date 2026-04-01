@@ -96,6 +96,20 @@ cp .env.example .env
 [
   {
     "name": "risk_mail",
+    "imap": {
+      "host": "imap.qiye.aliyun.com",
+      "port": 993,
+      "secure": true,
+      "user": "claw@bank-risk.cn",
+      "pass": "replace_me"
+    },
+    "smtp": {
+      "host": "smtp.qiye.aliyun.com",
+      "port": 465,
+      "secure": true,
+      "user": "claw@bank-risk.cn",
+      "pass": "replace_me"
+    },
     "imapMailbox": "INBOX",
     "doneMailbox": "已完成",
     "failedMailbox": "失败",
@@ -104,6 +118,20 @@ cp .env.example .env
   },
   {
     "name": "ops_mail",
+    "imap": {
+      "host": "imap.qiye.aliyun.com",
+      "port": 993,
+      "secure": true,
+      "user": "browser@bank-risk.cn",
+      "pass": "replace_me"
+    },
+    "smtp": {
+      "host": "smtp.qiye.aliyun.com",
+      "port": 465,
+      "secure": true,
+      "user": "browser@bank-risk.cn",
+      "pass": "replace_me"
+    },
     "imapMailbox": "OPS",
     "doneMailbox": "OPS_已完成",
     "failedMailbox": "OPS_失败",
@@ -112,6 +140,8 @@ cp .env.example .env
   }
 ]
 ```
+
+`imap` / `smtp` 字段可按 source 覆盖账号与服务器；未提供时会回退到 `.env` 的全局 `IMAP_*` / `SMTP_*` 配置。
 
 ## 运行方式
 
