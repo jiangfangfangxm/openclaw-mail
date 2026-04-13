@@ -830,8 +830,16 @@ function normalizeReply(reply) {
 }
 
 function buildReplyMailContent({ text, html }) {
-  const normalizedText = normalizeReply(text);
-  const normalizedHtml = String(html || '').trim() || renderHtmlFromText(normalizedText);
+  const inputText = String(text || '').trim();
+  const inputHtml = String(html || '').trim();
+  const textLooksLikeHtml = isLikelyHtml(inputText);
+
+  const normalizedHtml = inputHtml || (textLooksLikeHtml ? inputText : renderHtmlFromText(inputText));
+  const normalizedText = normalizeReply(
+    textLooksLikeHtml
+      ? htmlToText(inputText, { wordwrap: false })
+      : (inputText || htmlToText(normalizedHtml, { wordwrap: false }))
+  );
   const mode = String(config.mailReplyFormat || 'both').toLowerCase();
 
   if (mode === 'html') {
@@ -865,6 +873,12 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function isLikelyHtml(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return /<\/?[a-z][\s\S]*>/i.test(text);
 }
 
 function normalizeOpenClawLine(line) {

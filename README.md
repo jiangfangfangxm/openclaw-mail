@@ -89,6 +89,8 @@ cp .env.example .env
 
 这比直接转发完整 RFC822 原文更省 token，也更稳定。
 
+`MAIL_REPLY_FORMAT=both` 时，脚本会同时发送 `text + html` 两个版本；若模型把 HTML 写进 `reply_text` 但未单独提供 `reply_html`，脚本会自动识别并作为 HTML 正文发送，同时生成纯文本兜底版本。
+
 ### 多邮箱 + 多 agent 配置示例
 
 当你需要一个 worker 轮询多个邮箱，并且每个邮箱绑定不同 OpenClaw agent，可设置 `OPENCLAW_MAIL_SOURCES_FILE` 指向 JSON 文件：
