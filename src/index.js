@@ -57,6 +57,7 @@ const config = {
   retryStateFile: process.env.OPENCLAW_RETRY_STATE_FILE || '/tmp/openclaw-mail-retries.json',
   mailSourcesFile: process.env.OPENCLAW_MAIL_SOURCES_FILE || '',
   mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
+  mailReplyFormat: process.env.MAIL_REPLY_FORMAT || 'both',
   replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
   logOpenClawPrompt: boolean('OPENCLAW_LOG_PROMPT', false),
   logOpenClawResponse: boolean('OPENCLAW_LOG_RESPONSE', false),
@@ -342,11 +343,12 @@ async function processMessage({ imap, smtp, uid, source, archiveStrategy, failed
 
         if (config.replyOnOpenClawError) {
           const fallbackReply = normalizeReply(buildFailureReply(subject)).slice(0, config.openclaw.maxReplyChars);
+          const fallbackMailContent = buildReplyMailContent({ text: fallbackReply, html: '' });
           await smtp.sendMail({
             from: source.smtp.auth.user,
             to: from.address,
             subject: buildReplySubject(subject),
-            text: fallbackReply,
+            ...fallbackMailContent,
             inReplyTo: parsed.messageId,
             references: parsed.messageId,
           });
@@ -370,12 +372,16 @@ async function processMessage({ imap, smtp, uid, source, archiveStrategy, failed
     }
 
     const finalReply = normalizeReply(openclawReply.replyBody).slice(0, config.openclaw.maxReplyChars);
+    const finalMailContent = buildReplyMailContent({
+      text: finalReply,
+      html: openclawReply.replyHtml,
+    });
 
     await smtp.sendMail({
       from: source.smtp.auth.user,
       to: from.address,
       subject: buildReplySubject(subject),
-      text: finalReply,
+      ...finalMailContent,
       attachments: openclawReply.attachments,
       inReplyTo: parsed.messageId,
       references: parsed.messageId,
@@ -677,6 +683,7 @@ async function invokeOpenClaw({ prompt, sender, senderName, sessionId, agent }) 
 
   return {
     replyBody: isolatedResult,
+    replyHtml: parsedResult.replyHtml,
     attachments: parsedResult.attachments,
   };
 }
@@ -765,12 +772,13 @@ function parseOpenClawResult(rawResult) {
   const text = String(rawResult || '').trim();
   const parsed = tryParseJsonFromText(text);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { replyBody: text, attachments: [] };
+    return { replyBody: text, replyHtml: '', attachments: [] };
   }
 
   const replyBody = String(parsed.reply_text || parsed.reply || parsed.text || '').trim() || text;
+  const replyHtml = String(parsed.reply_html || parsed.html || '').trim();
   const attachments = normalizeMailAttachments(parsed.attachments);
-  return { replyBody, attachments };
+  return { replyBody, replyHtml, attachments };
 }
 
 function tryParseJsonFromText(text) {
@@ -819,6 +827,44 @@ function buildOpenClawSessionId() {
 
 function normalizeReply(reply) {
   return String(reply || '').replace(/\r/g, '').trim() || '任务已处理，但未返回可发送内容。';
+}
+
+function buildReplyMailContent({ text, html }) {
+  const normalizedText = normalizeReply(text);
+  const normalizedHtml = String(html || '').trim() || renderHtmlFromText(normalizedText);
+  const mode = String(config.mailReplyFormat || 'both').toLowerCase();
+
+  if (mode === 'html') {
+    return { html: normalizedHtml };
+  }
+
+  if (mode === 'text') {
+    return { text: normalizedText };
+  }
+
+  return {
+    text: normalizedText,
+    html: normalizedHtml,
+  };
+}
+
+function renderHtmlFromText(text) {
+  const escaped = escapeHtml(String(text || '').trim());
+  const paragraphs = escaped
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\n/g, '<br/>'))
+    .filter(Boolean)
+    .map((paragraph) => `<p>${paragraph}</p>`);
+  return paragraphs.join('\n') || '<p>（空）</p>';
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function normalizeOpenClawLine(line) {

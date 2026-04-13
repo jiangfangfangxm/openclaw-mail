@@ -59,6 +59,7 @@ cp .env.example .env
 - `OPENCLAW_MAIL_SOURCES_FILE`：多邮箱配置 JSON 文件路径；为空时走单邮箱模式（`IMAP_MAILBOX` + `OPENCLAW_CLI_AGENT`）
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
+- `MAIL_REPLY_FORMAT`：回邮正文格式，`both|html|text`，默认 `both`（推荐）
 - `OPENCLAW_REPLY_ON_ERROR`：OpenClaw 最终失败（达到重试上限）时是否发送失败通知邮件，默认 `false`
 - `LOCK_FILE`：单实例锁文件路径，默认 `/tmp/openclaw-mail.lock`；用于避免 systemd / OpenClaw / 手工启动同时触发多个实例。若检测到锁文件里的 PID 已不存在，脚本会自动清理陈旧锁
 - `OPENCLAW_LOG_PROMPT`：是否把发送给 OpenClaw 的完整 prompt 打印到 stdout，默认 `false`
@@ -78,7 +79,7 @@ cp .env.example .env
 
 除回答问题外，还要识别并执行邮件中明确提出的操作要求（如转发结果、抄送指定邮箱、补充指定格式）。
 如果识别到操作要求，请在回复正文中明确写出“已执行的操作”和“未执行原因（如信息不足或权限限制）”。
-如果你需要返回附件，请输出 JSON：{"reply_text":"...","attachments":[{"filename":"...","content_type":"...","content_base64":"..."}]}。
+如果你需要返回附件或富文本，请输出 JSON：{"reply_text":"...","reply_html":"<p>...</p>","attachments":[{"filename":"...","content_type":"...","content_base64":"..."}]}。
 如果不需要附件，请只输出邮件正文文本。
 请直接输出可用于邮件回复的最终正文。
 不要输出思考过程、JSON、Markdown 代码块、日志。
