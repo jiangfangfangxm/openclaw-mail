@@ -57,6 +57,7 @@ cp .env.example .env
 - `OPENCLAW_RETRY_BACKOFF_SECONDS`：重试退避秒数列表，默认 `60,300,1800`；超过列表长度时使用最后一个值
 - `OPENCLAW_RETRY_STATE_FILE`：重试状态持久化文件，默认 `/tmp/openclaw-mail-retries.json`
 - `OPENCLAW_MAIL_SOURCES_FILE`：多邮箱配置 JSON 文件路径；为空时走单邮箱模式（`IMAP_MAILBOX` + `OPENCLAW_CLI_AGENT`）
+- `OPENCLAW_PROMPT_TEMPLATE_FILE`：全局 prompt 模板文件路径（支持 `{{route}}/{{sender}}/{{subject}}/{{body}}` 占位符）
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `MAIL_REPLY_FORMAT`：回邮正文格式，`both|html|text`，默认 `both`（推荐）
@@ -119,6 +120,7 @@ cp .env.example .env
     "doneMailbox": "已完成",
     "failedMailbox": "失败",
     "openclawAgent": "bankriskmail",
+    "promptTemplateFile": "./templates/prompt-default.txt",
     "enabled": true
   },
   {
@@ -141,12 +143,20 @@ cp .env.example .env
     "doneMailbox": "OPS_已完成",
     "failedMailbox": "OPS_失败",
     "openclawAgent": "opsagent",
+    "promptTemplateFile": "./templates/prompt-analysis.txt",
     "enabled": true
   }
 ]
 ```
 
-`imap` / `smtp` 字段可按 source 覆盖账号与服务器；未提供时会回退到 `.env` 的全局 `IMAP_*` / `SMTP_*` 配置。
+`imap` / `smtp` 字段可按 source 覆盖账号与服务器；未提供时会回退到 `.env` 的全局 `IMAP_*` / `SMTP_*` 配置。  
+`promptTemplateFile` 可按 source 覆盖；未配置时会回退到 `OPENCLAW_PROMPT_TEMPLATE_FILE`，再回退到内置模板。
+
+仓库提供了三种模板示例，可直接使用或按需修改：
+
+- `templates/prompt-default.txt`：通用默认模板
+- `templates/prompt-strict.txt`：严格结论导向模板
+- `templates/prompt-analysis.txt`：分析报告模板
 
 ## 运行方式
 

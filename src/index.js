@@ -57,6 +57,7 @@ const config = {
   retryBackoffSeconds: numberList('OPENCLAW_RETRY_BACKOFF_SECONDS', [60, 300, 1800]),
   retryStateFile: process.env.OPENCLAW_RETRY_STATE_FILE || '/tmp/openclaw-mail-retries.json',
   mailSourcesFile: process.env.OPENCLAW_MAIL_SOURCES_FILE || '',
+  promptTemplateFile: process.env.OPENCLAW_PROMPT_TEMPLATE_FILE || '',
   mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
   mailReplyFormat: process.env.MAIL_REPLY_FORMAT || 'both',
   replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
@@ -133,6 +134,7 @@ async function loadMailSources() {
     failedMailbox: config.imap.failedMailbox,
     createFailedMailbox: config.imap.createFailedMailbox,
     openclawAgent: config.openclaw.cliAgent,
+    promptTemplateFile: config.promptTemplateFile,
   }];
 
   if (!config.mailSourcesFile) {
@@ -176,6 +178,7 @@ async function loadMailSources() {
         failedMailbox: String(item.failedMailbox || config.imap.failedMailbox),
         createFailedMailbox: item.createFailedMailbox == null ? config.imap.createFailedMailbox : Boolean(item.createFailedMailbox),
         openclawAgent: String(item.openclawAgent || config.openclaw.cliAgent),
+        promptTemplateFile: String(item.promptTemplateFile || config.promptTemplateFile || ''),
       }));
   } catch (error) {
     console.warn(`Failed to load OPENCLAW_MAIL_SOURCES_FILE=${config.mailSourcesFile}: ${formatError(error)}. Fallback to default source.`);
@@ -316,7 +319,8 @@ async function processMessage({ imap, smtp, uid, source, archiveStrategy, failed
     }
 
     const route = detectRoute(subject, config.openclaw.routes);
-    const prompt = buildPrompt({
+    const prompt = await buildPrompt({
+      source,
       sender: from.address,
       senderName,
       subject,
@@ -637,25 +641,67 @@ function detectRoute(subject, routes) {
   return 'general';
 }
 
-function buildPrompt({ sender, senderName, subject, body, route }) {
-  return [
-    '任务来源：邮件',
-    `任务类型：${route}`,
-    `发件人：${sender}`,
-    `发件人姓名：${senderName || '(未知)'}`,
-    `邮件主题：${subject}`,
-    '邮件正文：',
-    body || '(空正文)',
-    '',
-    '除回答问题外，还要识别并执行邮件中明确提出的操作要求（如转发结果、抄送指定邮箱、补充指定格式）。',
-    '如果识别到操作要求，请在回复正文中明确写出“已执行的操作”和“未执行原因（如信息不足或权限限制）”。',
-    '如果你需要返回附件，请输出 JSON：{"reply_text":"...","attachments":[{"filename":"...","content_type":"...","content_base64":"..."}]}。',
-    '如果不需要附件，请只输出邮件正文文本。',
-    '请直接输出可用于邮件回复的最终正文。',
-    '不要输出思考过程、JSON、Markdown 代码块、日志。',
-    '如果任务信息不足，请直接列出最少的补充信息。',
-    '如果是搜索或网页操作，只保留关键结果与结论。',
-  ].join('\n');
+const promptTemplateCache = new Map();
+
+async function buildPrompt({ source, sender, senderName, subject, body, route }) {
+  const data = {
+    source_name: source?.name || 'default',
+    route,
+    sender,
+    sender_name: senderName || '(未知)',
+    subject,
+    body: body || '(空正文)',
+  };
+
+  const template = await resolvePromptTemplate(source?.promptTemplateFile);
+  if (!template) {
+    return [
+      '任务来源：邮件',
+      `任务类型：${route}`,
+      `发件人：${sender}`,
+      `发件人姓名：${senderName || '(未知)'}`,
+      `邮件主题：${subject}`,
+      '邮件正文：',
+      body || '(空正文)',
+      '',
+      '除回答问题外，还要识别并执行邮件中明确提出的操作要求（如转发结果、抄送指定邮箱、补充指定格式）。',
+      '如果识别到操作要求，请在回复正文中明确写出“已执行的操作”和“未执行原因（如信息不足或权限限制）”。',
+      '如果你需要返回附件，请输出 JSON：{"reply_text":"...","attachments":[{"filename":"...","content_type":"...","content_base64":"..."}]}。',
+      '如果不需要附件，请只输出邮件正文文本。',
+      '请直接输出可用于邮件回复的最终正文。',
+      '不要输出思考过程、JSON、Markdown 代码块、日志。',
+      '如果任务信息不足，请直接列出最少的补充信息。',
+      '如果是搜索或网页操作，只保留关键结果与结论。',
+    ].join('\n');
+  }
+
+  return renderPromptTemplate(template, data);
+}
+
+async function resolvePromptTemplate(templateFile) {
+  const normalized = String(templateFile || '').trim();
+  if (!normalized) return '';
+
+  if (promptTemplateCache.has(normalized)) {
+    return promptTemplateCache.get(normalized);
+  }
+
+  try {
+    const content = await readFile(normalized, 'utf8');
+    promptTemplateCache.set(normalized, content);
+    return content;
+  } catch (error) {
+    console.warn(`Failed to load prompt template file ${normalized}: ${formatError(error)}. Fallback to built-in template.`);
+    promptTemplateCache.set(normalized, '');
+    return '';
+  }
+}
+
+function renderPromptTemplate(template, data) {
+  return String(template).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (full, key) => {
+    if (!(key in data)) return '';
+    return String(data[key] ?? '');
+  });
 }
 
 async function invokeOpenClaw({ prompt, sender, senderName, sessionId, agent }) {
