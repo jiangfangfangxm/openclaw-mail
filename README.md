@@ -91,6 +91,7 @@ cp .env.example .env
 
 `MAIL_REPLY_FORMAT=both` 时，脚本会同时发送 `text + html` 两个版本；若模型把 HTML 写进 `reply_text` 但未单独提供 `reply_html`，脚本会自动识别并作为 HTML 正文发送，同时生成纯文本兜底版本。
 若模型返回的是 Markdown（如 `###`、`- 列表`、`**加粗**`），脚本会自动渲染为 HTML 再发送。
+若模型返回的是“HTML + Markdown 混合内容”，脚本也会统一渲染为 HTML，避免出现部分段落未渲染的问题。
 
 ### 多邮箱 + 多 agent 配置示例
 

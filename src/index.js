@@ -833,12 +833,14 @@ function normalizeReply(reply) {
 function buildReplyMailContent({ text, html }) {
   const inputText = String(text || '').trim();
   const inputHtml = String(html || '').trim();
-  const textLooksLikeHtml = isLikelyHtml(inputText);
-
-  const normalizedHtml = inputHtml || (textLooksLikeHtml ? inputText : renderHtmlFromText(inputText));
+  const richSource = inputHtml || inputText;
+  const richLooksLikeMarkup = isLikelyHtml(richSource) || isLikelyMarkdown(richSource);
+  const normalizedHtml = richLooksLikeMarkup
+    ? marked.parse(richSource, { breaks: true })
+    : renderHtmlFromText(inputText);
   const normalizedText = normalizeReply(
-    textLooksLikeHtml
-      ? htmlToText(inputText, { wordwrap: false })
+    richLooksLikeMarkup
+      ? htmlToText(normalizedHtml, { wordwrap: false })
       : (inputText || htmlToText(normalizedHtml, { wordwrap: false }))
   );
   const mode = String(config.mailReplyFormat || 'both').toLowerCase();
