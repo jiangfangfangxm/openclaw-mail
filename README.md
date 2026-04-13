@@ -90,6 +90,7 @@ cp .env.example .env
 这比直接转发完整 RFC822 原文更省 token，也更稳定。
 
 `MAIL_REPLY_FORMAT=both` 时，脚本会同时发送 `text + html` 两个版本；若模型把 HTML 写进 `reply_text` 但未单独提供 `reply_html`，脚本会自动识别并作为 HTML 正文发送，同时生成纯文本兜底版本。
+若模型返回的是 Markdown（如 `###`、`- 列表`、`**加粗**`），脚本会自动渲染为 HTML 再发送。
 
 ### 多邮箱 + 多 agent 配置示例
 

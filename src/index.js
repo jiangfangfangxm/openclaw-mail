@@ -3,6 +3,7 @@ import { ImapFlow } from 'imapflow';
 import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
 import { htmlToText } from 'html-to-text';
+import { marked } from 'marked';
 import { spawn } from 'node:child_process';
 import { open, unlink, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -857,7 +858,14 @@ function buildReplyMailContent({ text, html }) {
 }
 
 function renderHtmlFromText(text) {
-  const escaped = escapeHtml(String(text || '').trim());
+  const source = String(text || '').trim();
+  if (!source) return '<p>（空）</p>';
+
+  if (isLikelyMarkdown(source)) {
+    return marked.parse(source, { breaks: true });
+  }
+
+  const escaped = escapeHtml(source);
   const paragraphs = escaped
     .split(/\n{2,}/)
     .map((paragraph) => paragraph.replace(/\n/g, '<br/>'))
@@ -879,6 +887,20 @@ function isLikelyHtml(value) {
   const text = String(value || '').trim();
   if (!text) return false;
   return /<\/?[a-z][\s\S]*>/i.test(text);
+}
+
+function isLikelyMarkdown(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return [
+    /^#{1,6}\s/m,
+    /^\s*[-*+]\s+/m,
+    /^\s*\d+\.\s+/m,
+    /\*\*[^*]+\*\*/,
+    /`[^`]+`/,
+    /\[[^\]]+\]\([^)]+\)/,
+    /^---$/m,
+  ].some((pattern) => pattern.test(text));
 }
 
 function normalizeOpenClawLine(line) {
