@@ -58,6 +58,11 @@ cp .env.example .env
 - `OPENCLAW_RETRY_STATE_FILE`：重试状态持久化文件，默认 `/tmp/openclaw-mail-retries.json`
 - `OPENCLAW_MAIL_SOURCES_FILE`：多邮箱配置 JSON 文件路径；为空时走单邮箱模式（`IMAP_MAILBOX` + `OPENCLAW_CLI_AGENT`）
 - `OPENCLAW_PROMPT_TEMPLATE_FILE`：全局 prompt 模板文件路径（支持 `{{route}}/{{sender}}/{{subject}}/{{body}}` 占位符）
+- `MAIL_INBOUND_ATTACHMENTS_ENABLED`：是否处理收件附件并注入 prompt，默认 `true`
+- `MAIL_INBOUND_ATTACHMENTS_DIR`：收件附件临时落盘目录，默认 `/tmp/openclaw-mail/inbound`
+- `MAIL_INBOUND_ATTACHMENT_MAX_SIZE_BYTES`：单附件大小上限，默认 `10485760`（10MB）
+- `MAIL_INBOUND_ATTACHMENT_ALLOWED_TYPES`：允许的附件 MIME 列表（逗号分隔，空表示不过滤）
+- `MAIL_INBOUND_ATTACHMENTS_CLEANUP`：处理完成后是否清理临时附件目录，默认 `true`
 - `OPENCLAW_MAX_BODY_CHARS`：发给 OpenClaw 的正文长度上限
 - `OPENCLAW_MAX_REPLY_CHARS`：回复邮件正文长度上限
 - `MAIL_REPLY_FORMAT`：回邮正文格式，`both|html|text`，默认 `both`（推荐）
@@ -150,7 +155,8 @@ cp .env.example .env
 ```
 
 `imap` / `smtp` 字段可按 source 覆盖账号与服务器；未提供时会回退到 `.env` 的全局 `IMAP_*` / `SMTP_*` 配置。  
-`promptTemplateFile` 可按 source 覆盖；未配置时会回退到 `OPENCLAW_PROMPT_TEMPLATE_FILE`，再回退到内置模板。
+`promptTemplateFile` 可按 source 覆盖；未配置时会回退到 `OPENCLAW_PROMPT_TEMPLATE_FILE`，再回退到内置模板。  
+模板支持占位符：`{{source_name}}`、`{{route}}`、`{{sender}}`、`{{sender_name}}`、`{{subject}}`、`{{body}}`、`{{attachments_summary}}`、`{{attachments_json}}`。
 
 仓库提供了三种模板示例，可直接使用或按需修改：
 

@@ -5,8 +5,10 @@ import { simpleParser } from 'mailparser';
 import { htmlToText } from 'html-to-text';
 import { marked } from 'marked';
 import { spawn } from 'node:child_process';
-import { open, unlink, readFile, writeFile } from 'node:fs/promises';
+import { open, unlink, readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 const config = {
   imap: {
@@ -58,6 +60,11 @@ const config = {
   retryStateFile: process.env.OPENCLAW_RETRY_STATE_FILE || '/tmp/openclaw-mail-retries.json',
   mailSourcesFile: process.env.OPENCLAW_MAIL_SOURCES_FILE || '',
   promptTemplateFile: process.env.OPENCLAW_PROMPT_TEMPLATE_FILE || '',
+  inboundAttachmentsEnabled: boolean('MAIL_INBOUND_ATTACHMENTS_ENABLED', true),
+  inboundAttachmentsDir: process.env.MAIL_INBOUND_ATTACHMENTS_DIR || path.join(tmpdir(), 'openclaw-mail', 'inbound'),
+  inboundAttachmentMaxSizeBytes: number('MAIL_INBOUND_ATTACHMENT_MAX_SIZE_BYTES', 10 * 1024 * 1024),
+  inboundAttachmentAllowedTypes: stringList('MAIL_INBOUND_ATTACHMENT_ALLOWED_TYPES', []),
+  inboundAttachmentsCleanup: boolean('MAIL_INBOUND_ATTACHMENTS_CLEANUP', true),
   mailReplySubjectPrefix: process.env.MAIL_REPLY_SUBJECT_PREFIX || 'Re:',
   mailReplyFormat: process.env.MAIL_REPLY_FORMAT || 'both',
   replyOnOpenClawError: boolean('OPENCLAW_REPLY_ON_ERROR', false),
@@ -302,6 +309,13 @@ async function processMessage({ imap, smtp, uid, source, archiveStrategy, failed
 
     const subject = (parsed.subject || '').trim() || '(no subject)';
     const cleanBody = cleanMailBody(parsed).slice(0, config.openclaw.maxBodyChars);
+    const inboundAttachmentCtx = await prepareInboundAttachments({
+      parsed,
+      uid,
+      sourceName: source.name,
+    });
+
+    try {
     const retryKey = buildRetryKey({
       sourceName: source.name,
       imapUser: source.imap.auth.user,
@@ -325,6 +339,7 @@ async function processMessage({ imap, smtp, uid, source, archiveStrategy, failed
       senderName,
       subject,
       body: cleanBody,
+      attachments: inboundAttachmentCtx.items,
       route,
     });
     const sessionId = buildOpenClawSessionId();
@@ -396,6 +411,9 @@ async function processMessage({ imap, smtp, uid, source, archiveStrategy, failed
     delete retryState[retryKey];
     await saveRetryState(retryState);
     console.log(`Processed UID ${uid} from ${from.address}`);
+    } finally {
+      await cleanupInboundAttachments(inboundAttachmentCtx);
+    }
 }
 
 async function processUidsWithConcurrency({ source, uids, smtp, archiveStrategy, failedStrategy, retryState, concurrency }) {
@@ -531,6 +549,82 @@ function buildRetryKey({ sourceName, imapUser, mailbox, uid, messageId, from, su
   return createHash('sha256').update(raw).digest('hex');
 }
 
+async function prepareInboundAttachments({ parsed, uid, sourceName }) {
+  if (!config.inboundAttachmentsEnabled) {
+    return { items: [], tempDir: '' };
+  }
+
+  const incoming = Array.isArray(parsed?.attachments) ? parsed.attachments : [];
+  if (incoming.length === 0) {
+    return { items: [], tempDir: '' };
+  }
+
+  const allowedTypes = new Set(
+    (config.inboundAttachmentAllowedTypes || [])
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  await mkdir(config.inboundAttachmentsDir, { recursive: true });
+  const tempDir = await mkdtemp(path.join(config.inboundAttachmentsDir, `${sourceName}-${uid}-`));
+  const items = [];
+
+  for (let index = 0; index < incoming.length; index += 1) {
+    const attachment = incoming[index];
+    const rawContent = attachment?.content;
+    if (!rawContent) continue;
+
+    const filename = sanitizeAttachmentFilename(attachment?.filename || `attachment-${index + 1}`);
+    const contentType = String(attachment?.contentType || 'application/octet-stream');
+    const size = Number(attachment?.size || rawContent?.length || 0);
+    const loweredType = contentType.toLowerCase();
+
+    if (config.inboundAttachmentMaxSizeBytes > 0 && size > config.inboundAttachmentMaxSizeBytes) {
+      console.warn(`Skip inbound attachment ${filename}: size ${size} exceeds limit ${config.inboundAttachmentMaxSizeBytes}.`);
+      continue;
+    }
+
+    if (allowedTypes.size > 0 && !allowedTypes.has(loweredType)) {
+      console.warn(`Skip inbound attachment ${filename}: content-type ${contentType} not in allow list.`);
+      continue;
+    }
+
+    const fullPath = path.join(tempDir, `${index + 1}-${filename}`);
+    await writeFile(fullPath, rawContent);
+    items.push({
+      filename,
+      content_type: contentType,
+      size,
+      path: fullPath,
+    });
+  }
+
+  return { items, tempDir };
+}
+
+async function cleanupInboundAttachments(context) {
+  if (!context?.tempDir) return;
+  if (!config.inboundAttachmentsCleanup) return;
+  await rm(context.tempDir, { recursive: true, force: true }).catch(() => {});
+}
+
+function sanitizeAttachmentFilename(filename) {
+  return String(filename || 'attachment.bin')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim() || 'attachment.bin';
+}
+
+function formatInboundAttachmentSummary(attachments) {
+  if (!Array.isArray(attachments) || attachments.length === 0) {
+    return '(无附件)';
+  }
+
+  return attachments
+    .map((item, index) => `${index + 1}. ${item.filename} | ${item.content_type} | ${item.size} bytes | ${item.path}`)
+    .join('\n');
+}
+
 async function loadRetryState() {
   try {
     const content = await readFile(config.retryStateFile, 'utf8');
@@ -643,7 +737,9 @@ function detectRoute(subject, routes) {
 
 const promptTemplateCache = new Map();
 
-async function buildPrompt({ source, sender, senderName, subject, body, route }) {
+async function buildPrompt({ source, sender, senderName, subject, body, attachments, route }) {
+  const attachmentSummary = formatInboundAttachmentSummary(attachments);
+  const attachmentJson = JSON.stringify(attachments || [], null, 2);
   const data = {
     source_name: source?.name || 'default',
     route,
@@ -651,6 +747,8 @@ async function buildPrompt({ source, sender, senderName, subject, body, route })
     sender_name: senderName || '(未知)',
     subject,
     body: body || '(空正文)',
+    attachments_summary: attachmentSummary,
+    attachments_json: attachmentJson,
   };
 
   const template = await resolvePromptTemplate(source?.promptTemplateFile);
@@ -663,6 +761,9 @@ async function buildPrompt({ source, sender, senderName, subject, body, route })
       `邮件主题：${subject}`,
       '邮件正文：',
       body || '(空正文)',
+      '',
+      '邮件附件清单（如无则为空）：',
+      attachmentSummary,
       '',
       '除回答问题外，还要识别并执行邮件中明确提出的操作要求（如转发结果、抄送指定邮箱、补充指定格式）。',
       '如果识别到操作要求，请在回复正文中明确写出“已执行的操作”和“未执行原因（如信息不足或权限限制）”。',
@@ -1078,6 +1179,16 @@ function numberList(name, fallback) {
     .split(',')
     .map((item) => Number(item.trim()))
     .filter((item) => Number.isFinite(item) && item > 0);
+  return items.length > 0 ? items : fallback;
+}
+
+function stringList(name, fallback) {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const items = String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
   return items.length > 0 ? items : fallback;
 }
 
